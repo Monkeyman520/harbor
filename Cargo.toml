@@ -26,3 +26,15 @@ bytemuck = { version = "1.21", features = ["derive"] }
 # system font rasterization
 fontdb = "0.23"
 fontdue = "0.9"
+
+# pseudo-terminal process integration
+portable-pty = "0.8"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+
