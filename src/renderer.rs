@@ -1,9 +1,14 @@
+#![allow(unsafe_code)]
+
 use std::sync::Arc;
 use std::io::Write as _;
+use std::fs::File;
+use std::os::unix::io::{FromRawFd, RawFd};
+use std::process::{Command, Child};
 
 use anyhow::{Context as _, Result};
 use winit::window::Window;
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use nix::pty::{openpty, Winsize};
 
 use crate::{
     app::TerminalEvent,
@@ -27,8 +32,8 @@ pub(crate) struct Renderer {
     config: wgpu::SurfaceConfiguration,
     text: TextRenderer,
     pub(crate) terminal: LockedTerminal,
-    pty_master: Box<dyn MasterPty>,
-    pty_writer: Box<dyn std::io::Write + Send>,
+    master_fd: RawFd,
+    pty_writer: File,
 }
 
 impl Renderer {
@@ -108,29 +113,52 @@ impl Renderer {
         let terminal = Arc::new(parking_lot::Mutex::new(Terminal::new(rows, cols)));
         text.update(&device, &queue, &terminal.lock(), config.width, config.height);
 
-        let pty_system = native_pty_system();
-        let pair = pty_system
-            .openpty(PtySize {
-                rows: rows as u16,
-                cols: cols as u16,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .context("open pty")?;
-
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        let cmd = CommandBuilder::new(&shell);
-        let child = match pair.slave.spawn_command(cmd) {
-            Ok(c) => c,
-            Err(_) => {
-                let fallback = CommandBuilder::new("/bin/sh");
-                pair.slave.spawn_command(fallback).context("spawn fallback shell")?
-            }
+        let winsize = Winsize {
+            ws_row: rows as u16,
+            ws_col: cols as u16,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
         };
 
-        let pty_master = pair.master;
-        let pty_writer = pty_master.take_writer().context("take pty writer")?;
-        let mut reader = pty_master.try_clone_reader().context("clone pty reader")?;
+        let pty_res = openpty(Some(&winsize), None).context("open pty failed")?;
+        let master_fd = pty_res.master;
+        let slave_fd = pty_res.slave;
+
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+
+        // Spawn process helper
+        fn spawn_process(shell: &str, slave_fd: RawFd) -> std::io::Result<Child> {
+            use std::os::unix::process::CommandExt;
+            let dup_slave = unsafe { libc::dup(slave_fd) };
+            if dup_slave < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let mut cmd = Command::new(shell);
+            unsafe {
+                cmd.pre_exec(move || {
+                    if libc::login_tty(dup_slave) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let child = cmd.spawn();
+            let _ = unsafe { libc::close(dup_slave) };
+            child
+        }
+
+        let child = match spawn_process(&shell, slave_fd) {
+            Ok(c) => c,
+            Err(_) => spawn_process("/bin/sh", slave_fd).context("spawn fallback shell failed")?,
+        };
+
+        // Close slave_fd in the parent process, so that the parent does not hold an open descriptor.
+        // This ensures the master side receives EOF when the child process exits.
+        let _ = unsafe { libc::close(slave_fd) };
+
+        let master_file = unsafe { File::from_raw_fd(master_fd) };
+        let mut reader = master_file.try_clone().context("clone master file")?;
+        let pty_writer = master_file;
 
         let terminal_clone = terminal.clone();
         let proxy_clone = proxy.clone();
@@ -180,7 +208,7 @@ impl Renderer {
             config,
             text,
             terminal,
-            pty_master,
+            master_fd,
             pty_writer,
         })
     }
@@ -206,12 +234,14 @@ impl Renderer {
             terminal.resize(rows, cols);
         }
 
-        let _ = self.pty_master.resize(PtySize {
-            rows: rows as u16,
-            cols: cols as u16,
-            pixel_width: 0,
-            pixel_height: 0,
-        });
+        let ws = libc::winsize {
+            ws_row: rows as u16,
+            ws_col: cols as u16,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+
+        let _ = unsafe { libc::ioctl(self.master_fd, libc::TIOCSWINSZ, &ws) };
 
         {
             let terminal = self.terminal.lock();
