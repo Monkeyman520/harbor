@@ -9,6 +9,7 @@ mod render;
 mod renderer;
 mod terminal;
 mod text;
+mod pty;
 
 use anyhow::{Context as _, Result};
 use app::App;
