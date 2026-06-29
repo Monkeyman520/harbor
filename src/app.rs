@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use winit::{
     application::ApplicationHandler,
@@ -9,10 +10,16 @@ use winit::{
 
 use crate::{pty::PtySession, render::Render, renderer::Renderer};
 
+/// Shared thread-safe buffer for coalescing PTY output.
+pub(crate) struct CoalescedPtyBuffer {
+    data: Mutex<Vec<u8>>,
+    is_signal_pending: AtomicBool,
+}
+
 /// Events posted back to the winit event loop from background workers.
 pub(crate) enum AppEvent {
-    /// Raw bytes read from the shell process and decoded by the renderer.
-    PtyOutput(Vec<u8>),
+    /// Indicates new PTY data is available in the coalesced buffer.
+    PtyDataAvailable,
 }
 
 /// Application state holding the window and its renderer.
@@ -23,6 +30,8 @@ pub(crate) struct App {
     renderer: Option<Renderer>,
     /// Owns the shell process and keeps its reader thread alive while the app runs.
     pty: Option<PtySession>,
+    /// Thread-safe coalescing buffer for incoming PTY output.
+    pty_buffer: Arc<CoalescedPtyBuffer>,
 }
 
 /// Errors that can occur while starting the application.
@@ -47,7 +56,7 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
-            AppEvent::PtyOutput(output) => self.write_pty_output(&output),
+            AppEvent::PtyDataAvailable => self.process_coalesced_pty_data(),
         }
     }
 
@@ -100,6 +109,10 @@ impl App {
             window: None,
             renderer: None,
             pty: None,
+            pty_buffer: Arc::new(CoalescedPtyBuffer {
+                data: Mutex::new(Vec::new()),
+                is_signal_pending: AtomicBool::new(false),
+            }),
         }
     }
 
@@ -136,12 +149,34 @@ impl App {
         // The reader thread returns false when the event loop has gone away, which lets
         // the pump stop instead of keeping a detached background loop alive.
         let event_proxy = self.event_proxy.clone();
+        let pty_buffer = self.pty_buffer.clone();
         let pty = PtySession::start_shell_reader(size, move |output| {
-            event_proxy.send_event(AppEvent::PtyOutput(output)).is_ok()
+            {
+                let mut data = pty_buffer.data.lock().unwrap();
+                data.extend_from_slice(&output);
+            }
+            let was_pending = pty_buffer.is_signal_pending.swap(true, Ordering::SeqCst);
+            if !was_pending {
+                event_proxy.send_event(AppEvent::PtyDataAvailable).is_ok()
+            } else {
+                true
+            }
         })
         .map_err(AppError::Pty)?;
         self.pty = Some(pty);
         Ok(())
+    }
+
+    fn process_coalesced_pty_data(&mut self) {
+        let pending_data = {
+            let mut data = self.pty_buffer.data.lock().unwrap();
+            self.pty_buffer.is_signal_pending.store(false, Ordering::SeqCst);
+            std::mem::take(&mut *data)
+        };
+
+        if !pending_data.is_empty() {
+            self.write_pty_output(&pending_data);
+        }
     }
 
     fn write_pty_output(&mut self, output: &[u8]) {
