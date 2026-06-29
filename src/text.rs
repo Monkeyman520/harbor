@@ -2,7 +2,7 @@ use std::{collections::HashMap, mem};
 
 use anyhow::Result;
 use fontdue::Font;
-use wgpu::util::DeviceExt;
+
 
 use crate::{
     font::load_system_font,
@@ -107,91 +107,6 @@ impl Vertex {
     }
 }
 
-/// GPU resources needed for one text draw call.
-struct TextDraw {
-    vertices: wgpu::Buffer,
-    vertex_count: u32,
-    _texture: wgpu::Texture,
-    bind_group: wgpu::BindGroup,
-}
-
-impl TextDraw {
-    /// Builds a glyph atlas texture and batched cell quads for the terminal grid.
-    fn new(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        bind_group_layout: &wgpu::BindGroupLayout,
-        font: &Font,
-        terminal: &Terminal,
-        surface_width: u32,
-        surface_height: u32,
-    ) -> Self {
-        let atlas = GlyphAtlas::new(font, terminal);
-        let vertices = atlas.vertices(terminal, surface_width as f32, surface_height as f32);
-        let texture = device.create_texture_with_data(
-            queue,
-            &wgpu::TextureDescriptor {
-                label: Some("glyph atlas texture"),
-                size: wgpu::Extent3d {
-                    width: atlas.width,
-                    height: atlas.height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            },
-            wgpu::util::TextureDataOrder::LayerMajor,
-            &atlas.pixels,
-        );
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("glyph atlas sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("glyph atlas bind group"),
-            layout: bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-        });
-        let vertex_count = vertices.len() as u32;
-        let vertices = if vertices.is_empty() {
-            vec![Vertex {
-                position: [0.0, 0.0],
-                tex_coords: [0.0, 0.0],
-            }]
-        } else {
-            vertices
-        };
-        let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("terminal cell vertices"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        Self {
-            vertices,
-            vertex_count,
-            _texture: texture,
-            bind_group,
-        }
-    }
-}
-
 /// Font-derived measurements used to map window pixels to terminal cells.
 #[derive(Clone, Copy)]
 struct TextMetrics {
@@ -237,8 +152,18 @@ impl TextMetrics {
 pub(crate) struct TextRenderer {
     font: Font,
     pipeline: wgpu::RenderPipeline,
-    bind_group_layout: wgpu::BindGroupLayout,
-    draw: TextDraw,
+    _bind_group_layout: wgpu::BindGroupLayout,
+
+    // Persistent GPU resources
+    vertices_buffer: wgpu::Buffer,
+    max_vertices: usize,
+    active_vertex_count: u32,
+
+    atlas_texture: wgpu::Texture,
+    _sampler: wgpu::Sampler,
+    bind_group: wgpu::BindGroup,
+
+    atlas: GlyphAtlas,
 }
 
 impl TextRenderer {
@@ -254,22 +179,123 @@ impl TextRenderer {
         let font = load_system_font()?;
         let bind_group_layout = Self::create_bind_group_layout(device);
         let pipeline = Self::create_pipeline(device, format, &bind_group_layout);
-        let draw = TextDraw::new(
-            device,
-            queue,
-            &bind_group_layout,
-            &font,
-            terminal,
-            width,
-            height,
+
+        let mut atlas = GlyphAtlas::new(&font);
+
+        // Pre-allocate 1024x1024 texture for glyph atlas
+        let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("glyph atlas texture"),
+            size: wgpu::Extent3d {
+                width: atlas.width,
+                height: atlas.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        // Clear texture with zeroes
+        let zeroes = vec![0u8; (atlas.width * atlas.height) as usize];
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &atlas_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &zeroes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(atlas.width),
+                rows_per_image: Some(atlas.height),
+            },
+            wgpu::Extent3d {
+                width: atlas.width,
+                height: atlas.height,
+                depth_or_array_layers: 1,
+            },
         );
 
-        Ok(Self {
+        // Pre-warm with ASCII characters (33..=126)
+        for code in 33..=126 {
+            if let Some(ch) = char::from_u32(code) {
+                if let Some((glyph, bitmap, x, y)) = atlas.allocate_glyph(&font, ch) {
+                    if !bitmap.is_empty() {
+                        queue.write_texture(
+                            wgpu::TexelCopyTextureInfo {
+                                texture: &atlas_texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d { x, y, z: 0 },
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            &bitmap,
+                            wgpu::TexelCopyBufferLayout {
+                                offset: 0,
+                                bytes_per_row: Some(glyph.width),
+                                rows_per_image: Some(glyph.height),
+                            },
+                            wgpu::Extent3d {
+                                width: glyph.width,
+                                height: glyph.height,
+                                depth_or_array_layers: 1,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
+        let texture_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("glyph atlas sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("glyph atlas bind group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+
+        // Pre-allocate maximum possible capacity vertex buffer
+        let max_vertices = (terminal.rows * terminal.cols * 6).max(6);
+        let vertices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("terminal cell vertices"),
+            size: (max_vertices * mem::size_of::<Vertex>()) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut renderer = Self {
             font,
             pipeline,
-            bind_group_layout,
-            draw,
-        })
+            _bind_group_layout: bind_group_layout,
+            vertices_buffer,
+            max_vertices,
+            active_vertex_count: 0,
+            atlas_texture,
+            _sampler: sampler,
+            bind_group,
+            atlas,
+        };
+
+        renderer.update(device, queue, terminal, width, height);
+
+        Ok(renderer)
     }
 
     pub(crate) fn terminal_size(&self, width: u32, height: u32) -> TerminalSize {
@@ -285,25 +311,132 @@ impl TextRenderer {
         width: u32,
         height: u32,
     ) {
-        self.draw = TextDraw::new(
-            device,
-            queue,
-            &self.bind_group_layout,
-            &self.font,
-            terminal,
-            width,
-            height,
-        );
+        let mut new_glyphs = Vec::new();
+        let mut needs_eviction = false;
+
+        // 1. Scan terminal and find characters not yet in atlas
+        for r in 0..terminal.rows {
+            for cell in terminal.row_cells(r) {
+                if cell.ch != ' ' && !self.atlas.glyphs.contains_key(&cell.ch) {
+                    if let Some((glyph, bitmap, x, y)) = self.atlas.allocate_glyph(&self.font, cell.ch) {
+                        if !bitmap.is_empty() {
+                            new_glyphs.push((glyph, bitmap, x, y));
+                        }
+                    } else {
+                        needs_eviction = true;
+                        break;
+                    }
+                }
+            }
+            if needs_eviction {
+                break;
+            }
+        }
+
+        // 2. Handle eviction if out of space
+        if needs_eviction {
+            let rebuild_glyphs = self.atlas.clear_and_rebuild(&self.font, terminal);
+
+            // Clear GPU texture with zeroes
+            let zeroes = vec![0u8; (self.atlas.width * self.atlas.height) as usize];
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.atlas_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &zeroes,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.atlas.width),
+                    rows_per_image: Some(self.atlas.height),
+                },
+                wgpu::Extent3d {
+                    width: self.atlas.width,
+                    height: self.atlas.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+
+            // Upload all rebuilt glyphs
+            for (glyph, bitmap, x, y) in rebuild_glyphs {
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &self.atlas_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d { x, y, z: 0 },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &bitmap,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(glyph.width),
+                        rows_per_image: Some(glyph.height),
+                    },
+                    wgpu::Extent3d {
+                        width: glyph.width,
+                        height: glyph.height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+        } else {
+            // Upload new incremental glyphs
+            for (glyph, bitmap, x, y) in new_glyphs {
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &self.atlas_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d { x, y, z: 0 },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &bitmap,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(glyph.width),
+                        rows_per_image: Some(glyph.height),
+                    },
+                    wgpu::Extent3d {
+                        width: glyph.width,
+                        height: glyph.height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+        }
+
+        // 3. Generate vertices
+        let vertices = self.atlas.vertices(terminal, width as f32, height as f32);
+        self.active_vertex_count = vertices.len() as u32;
+
+        if !vertices.is_empty() {
+            // 4. Resize vertex buffer if needed
+            if vertices.len() > self.max_vertices {
+                self.max_vertices = (terminal.rows * terminal.cols * 6).max(vertices.len());
+                self.vertices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("terminal cell vertices"),
+                    size: (self.max_vertices * mem::size_of::<Vertex>()) as wgpu::BufferAddress,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+            }
+
+            // 5. Upload new vertices using write_buffer
+            queue.write_buffer(&self.vertices_buffer, 0, bytemuck::cast_slice(&vertices));
+        }
     }
 }
 
 impl<'pass> Render<&mut wgpu::RenderPass<'pass>> for TextRenderer {
     /// Binds the glyph atlas and issues the batched cell draw call.
     fn render(&mut self, render_pass: &mut wgpu::RenderPass<'pass>) {
-        render_pass.set_pipeline(&self.pipeline);
-        render_pass.set_bind_group(0, &self.draw.bind_group, &[]);
-        render_pass.set_vertex_buffer(0, self.draw.vertices.slice(..));
-        render_pass.draw(0..self.draw.vertex_count, 0..1);
+        if self.active_vertex_count > 0 {
+            render_pass.set_pipeline(&self.pipeline);
+            render_pass.set_bind_group(0, &self.bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.vertices_buffer.slice(..));
+            render_pass.draw(0..self.active_vertex_count, 0..1);
+        }
     }
 }
 
@@ -402,100 +535,125 @@ struct AtlasUv {
 struct GlyphAtlas {
     width: u32,
     height: u32,
-    pixels: Vec<u8>,
     glyphs: HashMap<char, AtlasGlyph>,
     cell_width: f32,
     line_height: f32,
     ascent: f32,
+
+    current_x: u32,
+    current_y: u32,
+    next_y: u32,
 }
 
 impl GlyphAtlas {
-    /// Rasterizes each distinct visible character once and packs glyphs into one atlas row.
-    fn new(font: &Font, terminal: &Terminal) -> Self {
+    fn new(font: &Font) -> Self {
         let text_metrics = TextMetrics::new(font);
-        let mut chars = Vec::with_capacity(terminal.rows * terminal.cols);
-        for r in 0..terminal.rows {
-            for cell in terminal.row_cells(r) {
-                if cell.ch != ' ' {
-                    chars.push(cell.ch);
-                }
-            }
-        }
-        chars.sort_unstable();
-        chars.dedup();
-        let rasterized = chars
-            .into_iter()
-            .map(|ch| {
-                let (metrics, bitmap) = font.rasterize(ch, FONT_SIZE);
-                (ch, metrics, bitmap)
-            })
-            .collect::<Vec<_>>();
-
-        if rasterized.is_empty() {
-            return Self {
-                width: 1,
-                height: 1,
-                pixels: vec![0],
-                glyphs: HashMap::new(),
-                cell_width: text_metrics.cell_width,
-                line_height: text_metrics.line_height,
-                ascent: text_metrics.ascent,
-            };
-        }
-
-        let width = rasterized
-            .iter()
-            .map(|(_, metrics, _)| metrics.width as u32 + ATLAS_PADDING)
-            .sum::<u32>()
-            .max(1);
-        let height = rasterized
-            .iter()
-            .map(|(_, metrics, _)| metrics.height as u32)
-            .max()
-            .unwrap_or(1)
-            .max(1);
-        let mut pixels = vec![0; (width * height) as usize];
-        let mut glyphs = HashMap::with_capacity(rasterized.len());
-        let mut atlas_x = 0;
-
-        for (ch, metrics, bitmap) in rasterized {
-            for row in 0..metrics.height {
-                let dst_start = row * width as usize + atlas_x as usize;
-                let src_start = row * metrics.width;
-                let src_end = src_start + metrics.width;
-                pixels[dst_start..dst_start + metrics.width]
-                    .copy_from_slice(&bitmap[src_start..src_end]);
-            }
-
-            let left = atlas_x as f32 / width as f32;
-            let right = (atlas_x + metrics.width as u32) as f32 / width as f32;
-            glyphs.insert(
-                ch,
-                AtlasGlyph {
-                    uv: AtlasUv {
-                        left,
-                        top: 0.0,
-                        right,
-                        bottom: metrics.height as f32 / height as f32,
-                    },
-                    width: metrics.width as u32,
-                    height: metrics.height as u32,
-                    xmin: metrics.xmin,
-                    ymin: metrics.ymin,
-                },
-            );
-            atlas_x += metrics.width as u32 + ATLAS_PADDING;
-        }
-
         Self {
-            width,
-            height,
-            pixels,
-            glyphs,
+            width: 1024,
+            height: 1024,
+            glyphs: HashMap::new(),
             cell_width: text_metrics.cell_width,
             line_height: text_metrics.line_height,
             ascent: text_metrics.ascent,
+            current_x: 0,
+            current_y: 0,
+            next_y: 0,
         }
+    }
+
+    fn allocate_glyph(&mut self, font: &Font, ch: char) -> Option<(AtlasGlyph, Vec<u8>, u32, u32)> {
+        let (metrics, bitmap) = font.rasterize(ch, FONT_SIZE);
+        let glyph_w = metrics.width as u32;
+        let glyph_h = metrics.height as u32;
+
+        if glyph_w == 0 || glyph_h == 0 {
+            let glyph = AtlasGlyph {
+                uv: AtlasUv {
+                    left: 0.0,
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                },
+                width: 0,
+                height: 0,
+                xmin: 0,
+                ymin: 0,
+            };
+            self.glyphs.insert(ch, glyph);
+            return Some((glyph, Vec::new(), 0, 0));
+        }
+
+        if self.current_x + glyph_w + ATLAS_PADDING > self.width {
+            self.current_x = 0;
+            self.current_y = self.next_y;
+        }
+
+        if self.current_y + glyph_h > self.height {
+            return None;
+        }
+
+        let left = self.current_x as f32 / self.width as f32;
+        let right = (self.current_x + glyph_w) as f32 / self.width as f32;
+        let top = self.current_y as f32 / self.height as f32;
+        let bottom = (self.current_y + glyph_h) as f32 / self.height as f32;
+
+        let glyph = AtlasGlyph {
+            uv: AtlasUv {
+                left,
+                top,
+                right,
+                bottom,
+            },
+            width: glyph_w,
+            height: glyph_h,
+            xmin: metrics.xmin,
+            ymin: metrics.ymin,
+        };
+
+        let x = self.current_x;
+        let y = self.current_y;
+        self.current_x += glyph_w + ATLAS_PADDING;
+        if self.current_y + glyph_h + ATLAS_PADDING > self.next_y {
+            self.next_y = self.current_y + glyph_h + ATLAS_PADDING;
+        }
+
+        self.glyphs.insert(ch, glyph);
+        Some((glyph, bitmap, x, y))
+    }
+
+    fn clear_and_rebuild(&mut self, font: &Font, terminal: &Terminal) -> Vec<(AtlasGlyph, Vec<u8>, u32, u32)> {
+        self.glyphs.clear();
+        self.current_x = 0;
+        self.current_y = 0;
+        self.next_y = 0;
+
+        let mut uploads = Vec::new();
+
+        // Re-add ASCII (33..=126)
+        for code in 33..=126 {
+            if let Some(ch) = char::from_u32(code) {
+                if let Some((glyph, bitmap, x, y)) = self.allocate_glyph(font, ch) {
+                    if !bitmap.is_empty() {
+                        uploads.push((glyph, bitmap, x, y));
+                    }
+                }
+            }
+        }
+
+        // Re-add currently visible glyphs in the terminal
+        for r in 0..terminal.rows {
+            for cell in terminal.row_cells(r) {
+                if cell.ch != ' ' && !self.glyphs.contains_key(&cell.ch) {
+                    if let Some((glyph, bitmap, x, y)) = self.allocate_glyph(font, cell.ch) {
+                        if !bitmap.is_empty() {
+                            uploads.push((glyph, bitmap, x, y));
+                        }
+                    }
+                }
+            }
+        }
+
+        uploads
     }
 
     /// Converts non-empty terminal cells into one batched vertex list using atlas UVs.
@@ -550,14 +708,14 @@ mod tests {
         let mut terminal = Terminal::new(2, 5);
 
         terminal.put_str("aa b\nc a");
-        let atlas = GlyphAtlas::new(&font, &terminal);
+        let mut atlas = GlyphAtlas::new(&font);
+        atlas.clear_and_rebuild(&font, &terminal);
 
-        assert_eq!(atlas.glyphs.len(), 3);
+        assert_eq!(atlas.glyphs.len(), 94); // All visible characters 'a', 'b', 'c' are already in the 94 printable ASCII (33..=126)
         assert!(atlas.glyphs.contains_key(&'a'));
         assert!(atlas.glyphs.contains_key(&'b'));
         assert!(atlas.glyphs.contains_key(&'c'));
         assert!(!atlas.glyphs.contains_key(&' '));
-        assert_eq!(atlas.pixels.len(), (atlas.width * atlas.height) as usize);
     }
 
     #[test]
@@ -566,7 +724,8 @@ mod tests {
         let mut terminal = Terminal::new(2, 4);
 
         terminal.put_str("a b\n c ");
-        let atlas = GlyphAtlas::new(&font, &terminal);
+        let mut atlas = GlyphAtlas::new(&font);
+        atlas.clear_and_rebuild(&font, &terminal);
         let vertices = atlas.vertices(&terminal, 800.0, 600.0);
 
         assert_eq!(vertices.len(), 18);
@@ -589,12 +748,11 @@ mod tests {
         let font = load_system_font().expect("load monospace test font");
         let terminal = Terminal::new(2, 4);
 
-        let atlas = GlyphAtlas::new(&font, &terminal);
+        let mut atlas = GlyphAtlas::new(&font);
+        atlas.clear_and_rebuild(&font, &terminal);
         let vertices = atlas.vertices(&terminal, 800.0, 600.0);
 
-        assert!(atlas.glyphs.is_empty());
-        assert_eq!((atlas.width, atlas.height), (1, 1));
-        assert_eq!(atlas.pixels, vec![0]);
+        assert_eq!(atlas.glyphs.len(), 94);
         assert!(vertices.is_empty());
     }
 }
