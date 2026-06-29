@@ -24,6 +24,7 @@ pub(crate) struct Renderer {
     config: wgpu::SurfaceConfiguration,
     text: TextRenderer,
     terminal: Terminal,
+    dirty: bool,
 }
 
 impl Renderer {
@@ -101,6 +102,7 @@ impl Renderer {
             config,
             text,
             terminal,
+            dirty: true,
         };
         renderer.refresh_text();
         Ok(renderer)
@@ -118,7 +120,7 @@ impl Renderer {
         tracing::trace!(width, height, "renderer resized");
         self.surface.configure(&self.device, &self.config);
         let terminal_size = self.resize_terminal_to_surface();
-        self.refresh_text();
+        self.dirty = true;
         terminal_size
     }
 
@@ -159,13 +161,17 @@ impl Renderer {
 
         let text = String::from_utf8_lossy(output);
         self.terminal.put_str(&text);
-        self.refresh_text();
+        self.dirty = true;
     }
 }
 
 impl Render for Renderer {
     /// Acquires the current surface texture, clears it, draws text, and presents it.
     fn render(&mut self, (): ()) {
+        if self.dirty {
+            self.refresh_text();
+            self.dirty = false;
+        }
         // Surface state changes during minimize, resize, or driver events; draw only with a valid texture.
         let output = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(output) => output,
