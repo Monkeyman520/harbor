@@ -87,6 +87,7 @@ impl Terminal {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn row_text(&self, row: usize) -> String {
         assert!(row < self.rows, "terminal row out of bounds");
         let start = row * self.cols;
