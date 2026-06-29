@@ -96,9 +96,13 @@ impl Terminal {
             .collect()
     }
 
-    pub(crate) fn rows_text(&self) -> impl Iterator<Item = String> + '_ {
-        (0..self.rows).map(|row| self.row_text(row))
+    pub(crate) fn row_cells(&self, row: usize) -> &[Cell] {
+        assert!(row < self.rows, "terminal row out of bounds");
+        let start = row * self.cols;
+        &self.cells[start..start + self.cols]
     }
+
+
 
     fn write_char(&mut self, ch: char) {
         let index = self.cursor_y * self.cols + self.cursor_x;

@@ -413,11 +413,14 @@ impl GlyphAtlas {
     /// Rasterizes each distinct visible character once and packs glyphs into one atlas row.
     fn new(font: &Font, terminal: &Terminal) -> Self {
         let text_metrics = TextMetrics::new(font);
-        let mut chars = terminal
-            .rows_text()
-            .flat_map(|row| row.chars().collect::<Vec<_>>())
-            .filter(|ch| *ch != ' ')
-            .collect::<Vec<_>>();
+        let mut chars = Vec::with_capacity(terminal.rows * terminal.cols);
+        for r in 0..terminal.rows {
+            for cell in terminal.row_cells(r) {
+                if cell.ch != ' ' {
+                    chars.push(cell.ch);
+                }
+            }
+        }
         chars.sort_unstable();
         chars.dedup();
         let rasterized = chars
@@ -504,10 +507,10 @@ impl GlyphAtlas {
     ) -> Vec<Vertex> {
         let mut vertices = Vec::new();
 
-        for (row, text) in terminal.rows_text().enumerate() {
+        for row in 0..terminal.rows {
             let baseline = TEXT_PADDING + self.ascent.ceil() + row as f32 * self.line_height;
-            for (col, ch) in text.chars().enumerate() {
-                let Some(glyph) = self.glyphs.get(&ch) else {
+            for (col, cell) in terminal.row_cells(row).iter().enumerate() {
+                let Some(glyph) = self.glyphs.get(&cell.ch) else {
                     continue;
                 };
                 if glyph.width == 0 || glyph.height == 0 {
