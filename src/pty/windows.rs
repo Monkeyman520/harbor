@@ -16,7 +16,7 @@ use ::windows::{
                 EXTENDED_STARTUPINFO_PRESENT, InitializeProcThreadAttributeList,
                 LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
                 PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-                UpdateProcThreadAttribute,
+                TerminateProcess, UpdateProcThreadAttribute,
             },
         },
     },
@@ -86,6 +86,17 @@ impl Pty {
     /// Writes keyboard input bytes into the ConPTY input pipe.
     pub(crate) fn write(&mut self, data: &[u8]) -> anyhow::Result<usize> {
         self._input_write.write(data)
+    }
+}
+
+impl Drop for Pty {
+    fn drop(&mut self) {
+        tracing::info!("dropping windows pty, terminating shell process");
+        // Force terminate the shell process tree attached to this pseudo console
+        // to prevent pwsh or cmd from holding handles open and hanging on close.
+        unsafe {
+            let _ = TerminateProcess(self._process.handle(), 0xcfffffff);
+        }
     }
 }
 
