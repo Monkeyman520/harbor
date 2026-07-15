@@ -2,21 +2,29 @@ use std::{
     ffi::{OsStr, OsString},
     mem::size_of,
     os::windows::ffi::OsStrExt,
+    sync::mpsc,
+    time::Duration,
 };
 
 use ::windows::{
     Win32::{
-        Foundation::{CloseHandle, HANDLE},
+        Foundation::{CloseHandle, HANDLE, WAIT_FAILED, WAIT_TIMEOUT},
         Storage::FileSystem::{ReadFile, WriteFile},
         System::{
-            Console::{COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole},
+            Console::{COORD, CreatePseudoConsole, HPCON, ResizePseudoConsole},
+            IO::CancelSynchronousIo,
+            JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+                SetInformationJobObject, TerminateJobObject,
+            },
             Pipes::CreatePipe,
             Threading::{
                 CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
                 EXTENDED_STARTUPINFO_PRESENT, InitializeProcThreadAttributeList,
                 LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-                PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-                TerminateProcess, UpdateProcThreadAttribute,
+                PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
+                UpdateProcThreadAttribute, WaitForSingleObject,
             },
         },
     },
@@ -29,13 +37,15 @@ use super::PtySize;
 /// Windows ConPTY session and the handles that must outlive the shell process.
 pub(crate) struct Pty {
     /// Input write end retained so ConPTY keeps stdin open for the child.
-    _input_write: OwnedHandle,
+    _input_write: Option<OwnedHandle>,
     /// ConPTY handle; must outlive the process attached through the attribute list.
-    _pseudo_console: PseudoConsole,
+    _pseudo_console: Option<PseudoConsole>,
     /// Shell process handle retained for lifetime ownership.
-    _process: OwnedHandle,
+    _process: Option<OwnedHandle>,
     /// Primary thread handle returned with the process handle.
-    _thread: OwnedHandle,
+    _thread: Option<OwnedHandle>,
+    /// Windows Job Object used to ensure pwsh and cmd processes exit atomically together.
+    _job: Option<OwnedHandle>,
 }
 
 /// Read side of the ConPTY output pipe consumed by the background pump.
@@ -49,6 +59,28 @@ impl Pty {
         ensure!(size.rows > 0 && size.cols > 0, "pty size must be positive");
         tracing::info!(rows = size.rows, cols = size.cols, "creating windows pty");
 
+        // 1. Create and configure Job Object
+        let job = unsafe { CreateJobObjectW(None, PCWSTR::null()) }
+            .context("failed to create job object")?;
+        let job = OwnedHandle::new(job);
+
+        let mut limit_info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limit_info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let set_job = unsafe {
+            SetInformationJobObject(
+                job.handle(),
+                JobObjectExtendedLimitInformation,
+                &limit_info as *const _ as *const _,
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        if let Err(err) = set_job {
+            return Err(anyhow::anyhow!(
+                "failed to set job object information: {:?}",
+                err
+            ));
+        }
+
         let (input_read, input_write) =
             OwnedHandle::pipe().context("failed to create pty input pipe")?;
         let (output_read, output_write) =
@@ -61,6 +93,22 @@ impl Pty {
         let attribute_list = AttributeList::with_pseudo_console(pseudo_console.handle())?;
         let process_info = create_shell_process(&attribute_list)?;
         tracing::info!("created shell process");
+
+        // 2. Assign process to Job Object
+        let assign = unsafe { AssignProcessToJobObject(job.handle(), process_info.hProcess) };
+        if let Err(err) = assign {
+            tracing::error!("failed to assign process to job object: {:?}", err);
+            unsafe {
+                let _ = TerminateProcess(process_info.hProcess, 0xcfffffff);
+                let _ = CloseHandle(process_info.hProcess);
+                let _ = CloseHandle(process_info.hThread);
+            }
+            return Err(anyhow::anyhow!(
+                "failed to assign process to job object: {:?}",
+                err
+            ));
+        }
+
         // The pseudo console owns the child-side pipe handles after process creation.
         // Dropping our duplicates makes EOF observable when the shell exits.
         drop(input_read);
@@ -68,10 +116,11 @@ impl Pty {
 
         Ok((
             Self {
-                _input_write: input_write,
-                _pseudo_console: pseudo_console,
-                _process: OwnedHandle::new(process_info.hProcess),
-                _thread: OwnedHandle::new(process_info.hThread),
+                _input_write: Some(input_write),
+                _pseudo_console: Some(pseudo_console),
+                _process: Some(OwnedHandle::new(process_info.hProcess)),
+                _thread: Some(OwnedHandle::new(process_info.hThread)),
+                _job: Some(job),
             },
             PtyReader { output_read },
         ))
@@ -80,22 +129,80 @@ impl Pty {
     pub(crate) fn resize(&mut self, size: PtySize) -> anyhow::Result<()> {
         ensure!(size.rows > 0 && size.cols > 0, "pty size must be positive");
         tracing::info!(rows = size.rows, cols = size.cols, "resizing windows pty");
-        self._pseudo_console.resize(size)
+        self._pseudo_console.as_mut().unwrap().resize(size)
     }
 
     /// Writes keyboard input bytes into the ConPTY input pipe.
     pub(crate) fn write(&mut self, data: &[u8]) -> anyhow::Result<usize> {
-        self._input_write.write(data)
+        self._input_write.as_mut().unwrap().write(data)
+    }
+
+    /// Force terminates the shell process tree attached to this pseudo console.
+    /// This must be called before ClosePseudoConsole to prevent blocking.
+    pub(crate) fn terminate(&mut self) {
+        if self._job.is_none() {
+            return;
+        }
+        let mut terminated = false;
+        if let Some(job) = &self._job {
+            unsafe {
+                let result = TerminateJobObject(job.handle(), 0xcfffffff);
+                if result.is_ok() {
+                    terminated = true;
+                } else {
+                    tracing::error!("failed to terminate job object: {:?}", result.err());
+                }
+            }
+        }
+
+        // Explicitly wait for the entire Job (all processes in the tree) to exit (5s timeout)
+        if terminated && let Some(job) = &self._job {
+            unsafe {
+                let wait_result = WaitForSingleObject(job.handle(), 5000);
+                if wait_result == WAIT_TIMEOUT {
+                    tracing::warn!("WaitForSingleObject on Job TIMEOUT after 5000ms");
+                } else if wait_result == WAIT_FAILED {
+                    tracing::error!("WaitForSingleObject on Job FAILED");
+                }
+            }
+        }
+
+        // Take the job handle now that the wait has completed, making the method idempotent
+        drop(self._job.take());
+    }
+
+    /// Triggers the Win32 API to cancel any synchronous pending ReadFile I/O
+    /// on the background reader thread.
+    pub(crate) fn shutdown_reader(reader_handle: std::os::windows::io::RawHandle) {
+        unsafe {
+            let result = CancelSynchronousIo(HANDLE(reader_handle as *mut _));
+            if let Err(err) = result {
+                tracing::warn!("CancelSynchronousIo on reader thread failed: {:?}", err);
+            }
+        }
     }
 }
 
 impl Drop for Pty {
     fn drop(&mut self) {
-        tracing::info!("dropping windows pty, terminating shell process");
-        // Force terminate the shell process tree attached to this pseudo console
-        // to prevent pwsh or cmd from holding handles open and hanging on close.
-        unsafe {
-            let _ = TerminateProcess(self._process.handle(), 0xcfffffff);
+        self.terminate();
+
+        // Re-order field dropping explicitly to ensure all handle references (especially process/thread/job)
+        // are closed before ClosePseudoConsole is invoked.
+        if self._job.is_some() {
+            drop(self._job.take());
+        }
+        if self._process.is_some() {
+            drop(self._process.take());
+        }
+        if self._thread.is_some() {
+            drop(self._thread.take());
+        }
+        if self._input_write.is_some() {
+            drop(self._input_write.take());
+        }
+        if self._pseudo_console.is_some() {
+            drop(self._pseudo_console.take());
         }
     }
 }
@@ -234,9 +341,22 @@ impl OwnedHandle {
 impl Drop for OwnedHandle {
     fn drop(&mut self) {
         if !self.0.is_invalid() {
+            tracing::info!(
+                "[BUG DIAGNOSIS] OwnedHandle drop starting for handle: {:?}",
+                self.0
+            );
             unsafe {
-                let _ = CloseHandle(self.0);
+                let result = CloseHandle(self.0);
+                if let Err(err) = result {
+                    tracing::info!(
+                        "[BUG DIAGNOSIS] OwnedHandle drop CloseHandle FAILED: {:?}",
+                        err
+                    );
+                } else {
+                    tracing::info!("[BUG DIAGNOSIS] OwnedHandle drop CloseHandle SUCCESS");
+                }
             }
+            tracing::info!("[BUG DIAGNOSIS] OwnedHandle drop completed");
         }
     }
 }
@@ -289,8 +409,38 @@ impl PseudoConsole {
 impl Drop for PseudoConsole {
     fn drop(&mut self) {
         if !self.0.is_invalid() {
-            unsafe {
-                ClosePseudoConsole(self.0);
+            tracing::info!(
+                "[BUG DIAGNOSIS] PseudoConsole drop ClosePseudoConsole starting (delegating to thread)"
+            );
+            let (tx, rx) = mpsc::channel();
+            let hpcon_val = self.0.0;
+
+            let _ = std::thread::spawn(move || {
+                unsafe {
+                    use ::windows::Win32::System::Console::ClosePseudoConsole;
+                    use ::windows::Win32::System::Console::HPCON;
+                    ClosePseudoConsole(HPCON(hpcon_val));
+                }
+                let _ = tx.send(());
+            });
+
+            // Synchronously wait for up to 500 milliseconds for ClosePseudoConsole to return.
+            match rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(()) => {
+                    tracing::info!(
+                        "[BUG DIAGNOSIS] PseudoConsole drop ClosePseudoConsole completed successfully within 500ms"
+                    );
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    tracing::warn!(
+                        "[BUG DIAGNOSIS] PseudoConsole drop ClosePseudoConsole TIMEOUT after 500ms (abandoned, OS will reclaim resource on process exit)"
+                    );
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    tracing::error!(
+                        "[BUG DIAGNOSIS] PseudoConsole drop ClosePseudoConsole channel disconnected unexpectedly"
+                    );
+                }
             }
         }
     }

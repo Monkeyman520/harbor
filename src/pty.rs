@@ -4,12 +4,15 @@ mod unix;
 mod windows;
 
 use parking_lot::Mutex;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 use std::sync::Arc;
 use std::thread::JoinHandle;
+
 #[cfg(unix)]
 use unix::{Pty as RawPty, PtyReader};
 #[cfg(windows)]
-use windows::{Pty as RawPty, PtyReader};
+pub(crate) use windows::{Pty as RawPty, PtyReader};
 
 use anyhow::ensure;
 
@@ -39,7 +42,7 @@ pub(crate) struct PtySession {
     /// Platform-owned pseudo terminal and child-process handles.
     pty: RawPty,
     /// Joining is unnecessary on shutdown; the handle keeps the reader thread owned.
-    _reader: JoinHandle<()>,
+    _reader: Option<JoinHandle<()>>,
 }
 
 impl PtySize {
@@ -76,7 +79,7 @@ impl PtySession {
 
         Ok(Self {
             pty,
-            _reader: reader,
+            _reader: Some(reader),
         })
     }
 
@@ -89,6 +92,26 @@ impl PtySession {
     /// Forwards keyboard input bytes to the underlying PTY.
     pub(crate) fn write(&mut self, data: &[u8]) -> anyhow::Result<usize> {
         self.pty.write(data)
+    }
+}
+
+impl Drop for PtySession {
+    fn drop(&mut self) {
+        // 1. Explicitly terminate the shell process tree (only windows.rs implements terminate)
+        #[cfg(windows)]
+        self.pty.terminate();
+
+        // 2. Cancel synchronous blocked read on the background thread (Windows only)
+        #[cfg(windows)]
+        if let Some(reader) = &self._reader {
+            let thread_handle = reader.as_raw_handle();
+            RawPty::shutdown_reader(thread_handle);
+        }
+
+        // 3. Join the reader thread to ensure output_read handle is fully released before ClosePseudoConsole
+        if let Some(reader) = self._reader.take() {
+            let _ = reader.join();
+        }
     }
 }
 
