@@ -341,22 +341,12 @@ impl OwnedHandle {
 impl Drop for OwnedHandle {
     fn drop(&mut self) {
         if !self.0.is_invalid() {
-            tracing::info!(
-                "[BUG DIAGNOSIS] OwnedHandle drop starting for handle: {:?}",
-                self.0
-            );
             unsafe {
                 let result = CloseHandle(self.0);
                 if let Err(err) = result {
-                    tracing::info!(
-                        "[BUG DIAGNOSIS] OwnedHandle drop CloseHandle FAILED: {:?}",
-                        err
-                    );
-                } else {
-                    tracing::info!("[BUG DIAGNOSIS] OwnedHandle drop CloseHandle SUCCESS");
+                    tracing::error!("CloseHandle failed for handle {:?}: {:?}", self.0, err);
                 }
             }
-            tracing::info!("[BUG DIAGNOSIS] OwnedHandle drop completed");
         }
     }
 }
@@ -409,9 +399,6 @@ impl PseudoConsole {
 impl Drop for PseudoConsole {
     fn drop(&mut self) {
         if !self.0.is_invalid() {
-            tracing::info!(
-                "[BUG DIAGNOSIS] PseudoConsole drop ClosePseudoConsole starting (delegating to thread)"
-            );
             let (tx, rx) = mpsc::channel();
             let hpcon_val = self.0.0;
 
@@ -426,20 +413,14 @@ impl Drop for PseudoConsole {
 
             // Synchronously wait for up to 500 milliseconds for ClosePseudoConsole to return.
             match rx.recv_timeout(Duration::from_millis(500)) {
-                Ok(()) => {
-                    tracing::info!(
-                        "[BUG DIAGNOSIS] PseudoConsole drop ClosePseudoConsole completed successfully within 500ms"
-                    );
-                }
+                Ok(()) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     tracing::warn!(
-                        "[BUG DIAGNOSIS] PseudoConsole drop ClosePseudoConsole TIMEOUT after 500ms (abandoned, OS will reclaim resource on process exit)"
+                        "ClosePseudoConsole TIMEOUT after 500ms (abandoned, OS will reclaim resource on process exit)"
                     );
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    tracing::error!(
-                        "[BUG DIAGNOSIS] PseudoConsole drop ClosePseudoConsole channel disconnected unexpectedly"
-                    );
+                    tracing::error!("ClosePseudoConsole channel disconnected unexpectedly");
                 }
             }
         }
