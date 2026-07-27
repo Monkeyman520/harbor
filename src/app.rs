@@ -1,7 +1,7 @@
 //! Application shell: winit lifecycle, window bootstrap, frame render.
 
+mod confirmation;
 pub(crate) mod input;
-mod paste_dialog;
 mod ui;
 
 use std::{collections::HashMap, sync::Arc, time::Instant};
@@ -18,6 +18,7 @@ use crate::{
     event::{AppEvent, FrameControlFlow, FrameScheduler, RedrawReason},
     terminal_worker::{TerminalWorkerClient, empty_snapshot},
 };
+use confirmation::ConfirmationWindow;
 use harbor_render::{
     EventResult, GpuContext, SurfaceDisposition, SurfaceStatus, TextMetrics, UiRequest,
     load_system_fonts, surface_disposition,
@@ -25,8 +26,11 @@ use harbor_render::{
 use harbor_types::{
     RevisionedUpdateReceiver, TerminalSize, TerminalSnapshot, UpdateDamage, WorkerStatus,
 };
-use harbor_ui::DialogResult;
-use paste_dialog::PasteDialog;
+use harbor_widget::input::event::{
+    Key as WidgetKey, KeyboardEvent as WidgetKbEvent, Modifiers as WidgetModifiers, PointerButton,
+    PointerEvent, PointerPhase, UiEvent,
+};
+use harbor_widget::layout::Point as WidgetPoint;
 use ui::UiRoot;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,7 +69,9 @@ struct AppRuntime {
     window: Option<Arc<Window>>,
     gpu: Option<GpuContext>,
     ui: Option<UiRoot>,
-    paste_dialog: Option<PasteDialog>,
+    /// Widget framework runtime (Phase 1: layout + quad rendering).
+    widget_runtime: Option<harbor_widget::runtime::Runtime>,
+    confirmation_window: Option<ConfirmationWindow>,
 }
 
 /// Terminal-worker session state and its published projection.
@@ -202,64 +208,57 @@ impl ApplicationHandler<AppEvent> for App {
             self.request_redraw(RedrawReason::WorkerUpdate);
         }
 
-        // ── Dialog window handling ──────────────────────────────────────
-        let dialog_opt = self.runtime.paste_dialog.take();
-        if let Some(mut dialog) = dialog_opt {
-            if dialog.window_id() == window_id {
-                let result = dialog.handle_event(&event);
-                match result {
-                    DialogResult::Confirmed => {
-                        let text = dialog.raw_text.clone();
-                        if let (Some(snapshot), Some(worker)) = (
-                            self.session.latest_snapshot.as_ref(),
-                            self.session.worker.as_ref(),
-                        ) {
-                            let _ = worker.send(harbor_types::TerminalCommand::PasteText(text));
+        let confirmation = self.runtime.confirmation_window.take();
+        if let Some(mut confirmation) = confirmation {
+            if confirmation.window_id() == window_id {
+                let scale = self
+                    .runtime
+                    .window
+                    .as_ref()
+                    .map(|window| window.scale_factor() as f32)
+                    .unwrap_or(1.0);
+                match confirmation.handle_event(&event, scale) {
+                    confirmation::ConfirmationResult::Cancelled => {
+                        self.request_redraw(RedrawReason::Input);
+                        return;
+                    }
+                    confirmation::ConfirmationResult::Confirmed => {
+                        let raw_text = confirmation.raw_text().to_owned();
+                        if let Some(worker) = self.session.worker.as_ref() {
+                            let _ = worker.send(harbor_types::TerminalCommand::PasteText(raw_text));
                         }
                         self.request_redraw(RedrawReason::Input);
                         return;
                     }
-                    DialogResult::Cancelled => {
-                        self.request_redraw(RedrawReason::Input);
-                        return;
-                    }
-                    DialogResult::None => {
-                        if matches!(&event, WindowEvent::RedrawRequested) {
-                            if let (Some(gpu), Some(ui)) =
-                                (self.runtime.gpu.as_ref(), self.runtime.ui.as_mut())
-                            {
-                                let ensure_text = format!(
-                                    "[ Paste ][ Cancel ]Paste {} lines?",
-                                    dialog.raw_text.lines().count()
-                                );
-                                ui.ensure_glyphs(&ensure_text, gpu);
-                            }
-                            if let (Some(gpu), Some(ui)) =
+                    confirmation::ConfirmationResult::None => {
+                        if matches!(&event, WindowEvent::RedrawRequested)
+                            && let (Some(gpu), Some(ui)) =
                                 (self.runtime.gpu.as_ref(), self.runtime.ui.as_ref())
-                            {
-                                let metrics = ui.text_metrics();
-                                dialog.prepare(
-                                    gpu,
-                                    metrics,
-                                    |ch| ui.text_glyph(ch).copied(),
-                                    ui.text_pipeline(),
-                                    ui.text_bind_group(),
-                                );
-                            }
-                            if let (Some(gpu), Some(ui)) =
-                                (self.runtime.gpu.as_ref(), self.runtime.ui.as_ref())
-                            {
-                                dialog.render(gpu, ui.text_pipeline(), ui.text_bind_group());
-                            }
+                        {
+                            confirmation.render(gpu.device(), gpu.queue(), &|ch| {
+                                ui.text_glyph(ch).copied()
+                            });
                         }
-                        self.runtime.paste_dialog = Some(dialog);
+                        if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = &event
+                            && let Some(gpu) = self.runtime.gpu.as_ref()
+                        {
+                            confirmation.scale_factor_changed(gpu.device(), *scale_factor);
+                            self.frame.render_dirty = true;
+                            self.request_redraw(RedrawReason::Resize);
+                        }
+                        if let WindowEvent::Resized(size) = &event
+                            && let Some(gpu) = self.runtime.gpu.as_ref()
+                        {
+                            confirmation.resize(gpu.device(), size.width, size.height);
+                        }
+                        self.runtime.confirmation_window = Some(confirmation);
                     }
                 }
             } else {
-                self.runtime.paste_dialog = Some(dialog);
+                self.runtime.confirmation_window = Some(confirmation);
             }
         }
-        let dialog_active = self.runtime.paste_dialog.is_some();
+        let gate_active = self.runtime.confirmation_window.is_some();
 
         let (Some(gpu), Some(ui), Some(snapshot), Some(worker), Some(window)) = (
             self.runtime.gpu.as_mut(),
@@ -272,6 +271,10 @@ impl ApplicationHandler<AppEvent> for App {
         };
 
         if window.id() != window_id {
+            return;
+        }
+
+        if gate_active && matches!(&event, WindowEvent::KeyboardInput { .. }) {
             return;
         }
 
@@ -327,16 +330,30 @@ impl ApplicationHandler<AppEvent> for App {
         }
 
         if let EventResult::ConfirmPaste(raw_text) = &handled {
-            if self.runtime.paste_dialog.is_none() {
-                let ensure_text = format!(
-                    "[ Paste ][ Cancel ]Paste {} lines?0123456789",
-                    raw_text.lines().count()
-                );
-                ui.ensure_glyphs(&ensure_text, gpu);
-                self.runtime.paste_dialog = Some(PasteDialog::new(
+            if self.runtime.confirmation_window.is_none() {
+                let metrics = *ui.text_metrics();
+                harbor_widget::text::set_current_metrics(metrics);
+
+                // Compute preview wrapping and ensure glyphs for all preview chars.
+                let max_chars = ((crate::app::confirmation::DIALOG_WIDTH
+                    - crate::app::confirmation::DIALOG_HORIZONTAL_PADDING)
+                    as f32
+                    / metrics.cell_width)
+                    .floor() as usize;
+                let max_chars = max_chars.max(1);
+                let wrapped_lines =
+                    crate::app::confirmation::wrap_preview_text(raw_text, max_chars);
+                let all_preview_text: String = wrapped_lines.join("");
+                ui.ensure_glyphs(&all_preview_text, gpu);
+
+                self.runtime.confirmation_window = Some(ConfirmationWindow::new(
                     raw_text.clone(),
+                    wrapped_lines,
                     event_loop,
                     gpu,
+                    metrics,
+                    ui.text_bind_group_layout(),
+                    ui.text_bind_group(),
                     Some(window),
                 ));
             }
@@ -397,6 +414,38 @@ impl ApplicationHandler<AppEvent> for App {
             Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
         }
 
+        let mut widget_handled_key = false;
+        if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
+            let scale = window.scale_factor() as f32;
+            let is_keyboard = matches!(&event, WindowEvent::KeyboardInput { .. });
+            if (!gate_active || !is_keyboard)
+                && let Some(ui_event) = winit_to_uievent(&event, scale, self.modifiers)
+            {
+                let frame_request = widget_runtime.dispatch(ui_event, Instant::now());
+                if frame_request.needs_redraw {
+                    Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Input);
+                }
+                if !gate_active {
+                    for (_id, external_event) in widget_runtime.drain_external_input() {
+                        if let UiEvent::Keyboard(WidgetKbEvent::KeyDown { key, modifiers }) =
+                            external_event
+                        {
+                            let (logical_key, text) = widget_key_to_winit(&key);
+                            if let Some(request) = InputEncoder::request(
+                                &logical_key,
+                                text.as_deref(),
+                                widget_to_winit_mods(modifiers),
+                                false,
+                            ) {
+                                let _ = worker.send(harbor_types::TerminalCommand::Input(request));
+                            }
+                            widget_handled_key = true;
+                        }
+                    }
+                }
+            }
+        }
+
         match event {
             WindowEvent::CloseRequested => {
                 tracing::info!("close requested");
@@ -413,8 +462,28 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 self.frame.surface_recovery_attempted = false;
                 gpu.resize(size.width, size.height);
-                ui.resize(gpu, (size.width, size.height));
                 self.session.pending_resize = Some(ui.terminal_size(gpu));
+                self.frame.render_dirty = true;
+                if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
+                    let scale = window.scale_factor() as f32;
+                    let viewport =
+                        harbor_widget::renderer::Viewport::new(size.width, size.height, scale);
+                    widget_runtime.set_viewport(viewport);
+                    widget_runtime.update(Instant::now());
+                }
+                Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Resize);
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                tracing::trace!(?scale_factor, "main window scale factor changed");
+                let sf = scale_factor as f32;
+                let (physical_w, physical_h) = gpu.surface_size();
+                gpu.reconfigure();
+                if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
+                    let viewport =
+                        harbor_widget::renderer::Viewport::new(physical_w, physical_h, sf);
+                    widget_runtime.set_viewport(viewport);
+                    widget_runtime.update(Instant::now());
+                }
                 self.frame.render_dirty = true;
                 Self::wake_redraw(&mut self.frame.scheduler, window, RedrawReason::Resize);
             }
@@ -445,7 +514,7 @@ impl ApplicationHandler<AppEvent> for App {
                 device_id: _,
                 event,
                 is_synthetic: _,
-            } if event.state == ElementState::Pressed && !dialog_active => {
+            } if event.state == ElementState::Pressed && !gate_active && !widget_handled_key => {
                 let is_numpad = event.location == winit::keyboard::KeyLocation::Numpad;
                 let Some(request) = InputEncoder::request(
                     &event.logical_key,
@@ -462,6 +531,158 @@ impl ApplicationHandler<AppEvent> for App {
     }
 }
 
+// ── Widget event translation helpers ───────────────────────────────────────
+
+pub(crate) fn winit_to_uievent(
+    event: &WindowEvent,
+    scale_factor: f32,
+    modifiers: winit::keyboard::ModifiersState,
+) -> Option<UiEvent> {
+    match event {
+        WindowEvent::KeyboardInput {
+            device_id: _,
+            event,
+            is_synthetic: _,
+        } => {
+            let key = match &event.logical_key {
+                Key::Named(named) => named_to_widget_key(named)?,
+                Key::Character(ch) => WidgetKey::Character(ch.chars().next().unwrap_or('\0')),
+                _ => return None,
+            };
+            let modifiers = modifiers_to_widget(modifiers);
+            match event.state {
+                ElementState::Pressed => {
+                    Some(UiEvent::Keyboard(WidgetKbEvent::KeyDown { key, modifiers }))
+                }
+                ElementState::Released => {
+                    Some(UiEvent::Keyboard(WidgetKbEvent::KeyUp { key, modifiers }))
+                }
+            }
+        }
+        WindowEvent::CursorMoved {
+            device_id: _,
+            position,
+        } => {
+            let pos = WidgetPoint::new(
+                position.x as f32 / scale_factor,
+                position.y as f32 / scale_factor,
+            );
+            Some(UiEvent::Pointer(PointerEvent::new(
+                pos,
+                PointerPhase::Move,
+                PointerButton::Left,
+                0,
+            )))
+        }
+        WindowEvent::MouseInput {
+            device_id: _,
+            state,
+            button,
+        } => {
+            let phase = match state {
+                ElementState::Pressed => PointerPhase::Down,
+                ElementState::Released => PointerPhase::Up,
+            };
+            let btn = match button {
+                winit::event::MouseButton::Left => PointerButton::Left,
+                winit::event::MouseButton::Right => PointerButton::Right,
+                winit::event::MouseButton::Middle => PointerButton::Middle,
+                _ => return None,
+            };
+            Some(UiEvent::Pointer(PointerEvent::new(
+                WidgetPoint::ZERO,
+                phase,
+                btn,
+                0,
+            )))
+        }
+        WindowEvent::MouseWheel { delta, .. } => {
+            let (dx, dy) = match delta {
+                MouseScrollDelta::LineDelta(x, y) => (*x, *y),
+                MouseScrollDelta::PixelDelta(pos) => (pos.x as f32, pos.y as f32),
+            };
+            Some(UiEvent::Pointer(PointerEvent::new(
+                WidgetPoint::ZERO,
+                PointerPhase::Wheel { dx, dy },
+                PointerButton::Left,
+                0,
+            )))
+        }
+        _ => None,
+    }
+}
+
+fn named_to_widget_key(named: &NamedKey) -> Option<WidgetKey> {
+    match named {
+        NamedKey::Tab => Some(WidgetKey::Tab),
+        NamedKey::Enter => Some(WidgetKey::Enter),
+        NamedKey::Space => Some(WidgetKey::Space),
+        NamedKey::Escape => Some(WidgetKey::Escape),
+        NamedKey::Backspace => Some(WidgetKey::Backspace),
+        NamedKey::Delete => Some(WidgetKey::Delete),
+        NamedKey::ArrowUp => Some(WidgetKey::ArrowUp),
+        NamedKey::ArrowDown => Some(WidgetKey::ArrowDown),
+        NamedKey::ArrowLeft => Some(WidgetKey::ArrowLeft),
+        NamedKey::ArrowRight => Some(WidgetKey::ArrowRight),
+        NamedKey::Home => Some(WidgetKey::Home),
+        NamedKey::End => Some(WidgetKey::End),
+        NamedKey::PageUp => Some(WidgetKey::PageUp),
+        NamedKey::PageDown => Some(WidgetKey::PageDown),
+        _ => None,
+    }
+}
+
+fn modifiers_to_widget(mods: winit::keyboard::ModifiersState) -> WidgetModifiers {
+    WidgetModifiers {
+        shift: mods.shift_key(),
+        ctrl: mods.control_key(),
+        alt: mods.alt_key(),
+        meta: mods.super_key(),
+    }
+}
+
+/// Converts a widget `Key` back to a winit `Key` and optional character text.
+fn widget_key_to_winit(key: &WidgetKey) -> (Key, Option<String>) {
+    match key {
+        WidgetKey::Tab => (Key::Named(NamedKey::Tab), None),
+        WidgetKey::Enter => (Key::Named(NamedKey::Enter), Some("\r".into())),
+        WidgetKey::Space => (Key::Character(" ".into()), Some(" ".into())),
+        WidgetKey::Escape => (Key::Named(NamedKey::Escape), None),
+        WidgetKey::Backspace => (Key::Named(NamedKey::Backspace), None),
+        WidgetKey::Delete => (Key::Named(NamedKey::Delete), None),
+        WidgetKey::ArrowUp => (Key::Named(NamedKey::ArrowUp), None),
+        WidgetKey::ArrowDown => (Key::Named(NamedKey::ArrowDown), None),
+        WidgetKey::ArrowLeft => (Key::Named(NamedKey::ArrowLeft), None),
+        WidgetKey::ArrowRight => (Key::Named(NamedKey::ArrowRight), None),
+        WidgetKey::Home => (Key::Named(NamedKey::Home), None),
+        WidgetKey::End => (Key::Named(NamedKey::End), None),
+        WidgetKey::PageUp => (Key::Named(NamedKey::PageUp), None),
+        WidgetKey::PageDown => (Key::Named(NamedKey::PageDown), None),
+        WidgetKey::Character(c) => {
+            let s: String = c.to_string();
+            (Key::Character(s.clone().into()), Some(s))
+        }
+    }
+}
+
+fn widget_to_winit_mods(m: WidgetModifiers) -> winit::keyboard::ModifiersState {
+    use winit::keyboard::ModifiersState;
+    let mut state = ModifiersState::empty();
+    if m.shift {
+        state |= ModifiersState::SHIFT;
+    }
+    if m.ctrl {
+        state |= ModifiersState::CONTROL;
+    }
+    if m.alt {
+        state |= ModifiersState::ALT;
+    }
+    if m.meta {
+        state |= ModifiersState::SUPER;
+    }
+    state
+}
+
 // ── App (own methods) ─────────────────────────────────────────────────────
 impl App {
     /// Creates the application shell with no initial window, GPU, or worker.
@@ -472,7 +693,8 @@ impl App {
                 window: None,
                 gpu: None,
                 ui: None,
-                paste_dialog: None,
+                widget_runtime: None,
+                confirmation_window: None,
             },
             session: TerminalSession {
                 latest_snapshot: None,
@@ -545,6 +767,7 @@ impl App {
         tracing::info!(rows = size.rows, cols = size.cols, "terminal initialized");
         self.runtime.gpu = Some(gpu);
         self.runtime.ui = Some(ui);
+        self.init_widget_runtime();
         self.session
             .updates
             .accept(initial.clone())
@@ -748,7 +971,28 @@ impl App {
                 multiview_mask: None,
             });
 
-            ui.draw(&mut render_pass);
+            let terminal_ui: &UiRoot = ui;
+            if let Some(widget_runtime) = self.runtime.widget_runtime.as_mut() {
+                let scale = self.runtime.window.as_ref().unwrap().scale_factor() as f32;
+                let (physical_w, physical_h) = gpu.surface_size();
+                let viewport =
+                    harbor_widget::renderer::Viewport::new(physical_w, physical_h, scale);
+                let draw_terminal =
+                    |_id: harbor_widget::scene::primitive::ExternalDrawId,
+                     _rect: harbor_widget::layout::Rect,
+                     pass: &mut wgpu::RenderPass<'_>| {
+                        terminal_ui.draw(pass);
+                    };
+
+                widget_runtime.encode(
+                    gpu.queue(),
+                    &mut render_pass,
+                    viewport,
+                    Some(&draw_terminal),
+                );
+            } else {
+                terminal_ui.draw(&mut render_pass);
+            }
         }
 
         let command_buffer = encoder.finish();
@@ -762,6 +1006,21 @@ impl App {
         } else if status == SurfaceStatus::Success {
             self.frame.surface_recovery_attempted = false;
         }
+    }
+
+    /// Initializes the widget runtime with a terminal CustomPaint root.
+    fn init_widget_runtime(&mut self) {
+        use harbor_widget::widgets::custom_paint::CustomPaint;
+
+        const TERMINAL_DRAW_ID: harbor_widget::scene::primitive::ExternalDrawId = 1;
+
+        let gpu = self.runtime.gpu.as_ref().unwrap();
+        let mut runtime = harbor_widget::runtime::Runtime::new();
+        runtime.set_root(CustomPaint::new(TERMINAL_DRAW_ID));
+        runtime.init_renderer(gpu.device(), gpu.format());
+        runtime.update(Instant::now());
+
+        self.runtime.widget_runtime = Some(runtime);
     }
 }
 
