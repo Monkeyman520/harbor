@@ -130,15 +130,15 @@ compile_error!("backend-dx12 and backend-vulkan cannot be enabled together");
 fn selected_backends() -> wgpu::Backends {
     #[cfg(feature = "backend-dx12")]
     {
-        return wgpu::Backends::DX12;
+        wgpu::Backends::DX12
     }
     #[cfg(feature = "backend-vulkan")]
     {
-        return wgpu::Backends::VULKAN;
+        wgpu::Backends::VULKAN
     }
     #[cfg(target_os = "windows")]
     {
-        return wgpu::Backends::GL;
+        wgpu::Backends::GL
     }
     #[cfg(not(target_os = "windows"))]
     {

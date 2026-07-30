@@ -1,14 +1,9 @@
 use harbor_types::TerminalSnapshot;
 use std::sync::Arc;
 
-use harbor_config::TEXT_PADDING;
-
-use crate::{
-    Component,
-    gpu::{self, ColoredVertex, GpuContext},
-};
-
-use harbor_terminal::{CellAttrs, Color, DirtyRange};
+use super::gpu::{self, ColoredVertex, GpuContext, UploadMode};
+use crate::render::RenderViewport;
+use crate::{CellAttrs, Color, DirtyRange};
 
 // ── BackgroundLayer ───────────────────────────────────────────────────────────
 
@@ -62,14 +57,10 @@ impl Background {
         let verts = layer.build_all_vertices(snap, surf_w as f32, surf_h as f32);
         gpu.write_buffer(&layer.vertex_buffer, 0, bytemuck::cast_slice(&verts));
         layer.dirty = false;
-
         layer
     }
 
-    /// Builds the 6 × cols vertices for one row, using `cell_width` and `line_height`
-    /// for positioning. Cells with `bg == Color::Default` (and not inverse) produce
-    /// degenerate quads skipped by the rasterizer. Inverse cells use `fg` for the
-    /// background rect color.
+    /// Builds background vertices for a single row's cells.
     pub fn build_background_row_vertices(
         cell_width: f32,
         line_height: f32,
@@ -90,6 +81,8 @@ impl Background {
         )
     }
 
+    /// Builds background vertices for a slice of columns in a single row `[start_col, end_col)`.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_background_range_vertices(
         cell_width: f32,
         line_height: f32,
@@ -101,14 +94,12 @@ impl Background {
         surf_h: f32,
     ) -> Vec<ColoredVertex> {
         let mut verts = Vec::with_capacity((end_col - start_col) * 6);
+        let viewport = RenderViewport::new(cell_width, line_height);
         for col in start_col..end_col {
             let cell = snap.cell(row, col);
             let inverse = cell.attrs.contains(CellAttrs::INVERSE);
             if cell.bg != Color::Default || (inverse && cell.fg != Color::Default) {
-                let left = TEXT_PADDING + col as f32 * cell_width;
-                let right = TEXT_PADDING + (col + 1) as f32 * cell_width;
-                let top = TEXT_PADDING + row as f32 * line_height;
-                let bottom = TEXT_PADDING + (row + 1) as f32 * line_height;
+                let (left, top, right, bottom) = viewport.cell_bounds(row, col);
 
                 let color = if inverse {
                     cell.fg.to_rgba()
@@ -147,9 +138,7 @@ impl Background {
         }
         verts
     }
-}
 
-impl Background {
     pub fn prepare_with_dirty(
         &mut self,
         gpu: &GpuContext,
@@ -166,7 +155,7 @@ impl Background {
             dirty_ranges,
             resized || self.dirty,
         );
-        if plan.mode == crate::UploadMode::None {
+        if plan.mode == UploadMode::None {
             return;
         }
 
@@ -188,7 +177,7 @@ impl Background {
             gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
             self.rows = snap.rows;
             self.cols = snap.cols;
-        } else if plan.mode == crate::UploadMode::Full {
+        } else if plan.mode == UploadMode::Full {
             tracing::trace!("rebuilding background draw batch (full)");
             let verts = self.build_all_vertices(snap, surf_w as f32, surf_h as f32);
             gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
@@ -218,16 +207,14 @@ impl Background {
 
         self.dirty = false;
     }
-}
 
-impl Component for Background {
-    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&TerminalSnapshot>) {
+    pub fn prepare(&mut self, gpu: &GpuContext, snap: Option<&TerminalSnapshot>) {
         if let Some(snap) = snap {
             self.prepare_with_dirty(gpu, snap, &snap.dirty_ranges);
         }
     }
 
-    fn draw(&self, pass: &mut wgpu::RenderPass) {
+    pub fn draw(&self, pass: &mut wgpu::RenderPass) {
         pass.set_pipeline(&self.pipeline);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
 
@@ -237,7 +224,7 @@ impl Component for Background {
         }
     }
 
-    fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
+    pub fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
         self.dirty = true;
     }
 }
@@ -245,11 +232,11 @@ impl Component for Background {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harbor_terminal::Terminal;
+    use crate::Terminal;
 
     #[test]
     fn inverse_background_rect_uses_fg_color() {
-        let mut terminal = Terminal::new(2, 3);
+        let mut terminal = Terminal::new_headless(2, 3);
         terminal.put_str("\x1b[7;31mX\x1b[0m  ");
         let screen = terminal.screen();
         let cell = screen.cell(0, 0);
@@ -268,7 +255,7 @@ mod tests {
 
     #[test]
     fn sgr_strikethrough_stored() {
-        let mut terminal = Terminal::new(2, 6);
+        let mut terminal = Terminal::new_headless(2, 6);
         terminal.put_str("\x1b[9mstrike\x1b[0m");
         let snap = terminal.screen();
         assert!(
@@ -279,7 +266,7 @@ mod tests {
 
     #[test]
     fn sgr_underline_stored() {
-        let mut terminal = Terminal::new(2, 6);
+        let mut terminal = Terminal::new_headless(2, 6);
         terminal.put_str("\x1b[4munder\x1b[0m");
         let snap = terminal.screen();
         assert!(

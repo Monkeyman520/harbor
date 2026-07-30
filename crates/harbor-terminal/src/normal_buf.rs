@@ -83,18 +83,19 @@ impl NormalBuf {
         self.view_offset > 0
     }
 
-    pub fn total_rows(&self) -> usize {
+    pub(crate) fn total_rows(&self) -> usize {
         self.total_rows
     }
 
-    pub fn visible_start(&self) -> usize {
+    pub(crate) fn visible_start(&self) -> usize {
         self.visible_start
     }
 
     pub fn history_start(&self) -> u64 {
         self.history_start
     }
-    pub fn max_scrollback(&self) -> usize {
+    #[allow(dead_code)]
+    pub(crate) fn max_scrollback(&self) -> usize {
         self.max_scrollback
     }
 
@@ -106,36 +107,82 @@ impl NormalBuf {
         self.cell_mut(display_row, col)
     }
 
-    // ── linear-index helpers (for Screen's ring-buffer operations) ──
-
-    /// Returns a mutable reference to a cell by linear index.
-    ///
-    /// Screen uses this for direct per-cell writes after computing the
-    /// ring-buffer index itself.
-    pub fn cell_linear_mut(&mut self, index: usize) -> &mut Cell {
-        &mut self.cells[index]
+    /// Fills a row range `[start_col, end_col)` with a cell value and marks it dirty.
+    pub fn fill_row_range(&mut self, row: usize, start_col: usize, end_col: usize, cell: Cell) {
+        let start_col = start_col.min(self.cols);
+        let end_col = end_col.min(self.cols);
+        if start_col >= end_col {
+            return;
+        }
+        let ring_row = self.display_to_ring(row);
+        let start = ring_row * self.cols + start_col;
+        let end = ring_row * self.cols + end_col;
+        self.cells[start..end].fill(cell);
+        self.mark_range_dirty(row, start_col, end_col);
     }
 
-    /// Returns a reference to a cell by linear index.
-    pub fn cell_linear(&self, index: usize) -> &Cell {
-        &self.cells[index]
+    /// Selectively erases unprotected cells in a row range `[start_col, end_col)` and marks it dirty.
+    pub fn selective_erase_row_range(
+        &mut self,
+        row: usize,
+        start_col: usize,
+        end_col: usize,
+        erase: Cell,
+    ) {
+        let start_col = start_col.min(self.cols);
+        let end_col = end_col.min(self.cols);
+        if start_col >= end_col {
+            return;
+        }
+        let ring_row = self.display_to_ring(row);
+        let start = ring_row * self.cols + start_col;
+        let end = ring_row * self.cols + end_col;
+        for idx in start..end {
+            if !self.cells[idx].protected {
+                self.cells[idx] = erase;
+            }
+        }
+        self.mark_range_dirty(row, start_col, end_col);
     }
 
     /// Fills a contiguous range of cells with a specific cell value.
-    pub fn fill_linear_range_with(&mut self, start: usize, end: usize, cell: Cell) {
+    pub(crate) fn fill_linear_range_with(&mut self, start: usize, end: usize, cell: Cell) {
         self.cells[start..end].fill(cell);
     }
 
     /// Copies cells within the ring buffer by linear index range.
-    pub fn copy_linear_range(&mut self, src_start: usize, src_end: usize, dst: usize) {
+    pub(crate) fn copy_linear_range(&mut self, src_start: usize, src_end: usize, dst: usize) {
         self.cells.copy_within(src_start..src_end, dst);
     }
 
     /// Copies cells within the ring buffer — delegates to `Vec::copy_within`.
     ///
     /// Accepts any `RangeBounds<usize>` so both inline ranges and Range variables work.
-    pub fn copy_cells_within<R: std::ops::RangeBounds<usize>>(&mut self, src: R, dst: usize) {
+    #[allow(dead_code)]
+    pub(crate) fn copy_cells_within<R: std::ops::RangeBounds<usize>>(
+        &mut self,
+        src: R,
+        dst: usize,
+    ) {
         self.cells.copy_within(src, dst);
+    }
+
+    /// Copies a linear range `[src_start, src_end)` to `dst`, correctly
+    /// handling the case where the source range wraps around the end of
+    /// the ring buffer. All three arguments are linear cell indices.
+    ///
+    /// When `src_start <= src_end` the range is contiguous; otherwise
+    /// it is split into two parts: `[src_start, ring_end)` and
+    /// `[0, src_end)`, and both are copied in order.
+    pub(crate) fn copy_ring_range(&mut self, src_start: usize, src_end: usize, dst: usize) {
+        let ring_end = self.total_rows * self.cols;
+        if src_start <= src_end {
+            self.cells.copy_within(src_start..src_end, dst);
+        } else {
+            let first_len = ring_end - src_start;
+            self.cells.copy_within(src_start..ring_end, dst);
+            self.cells.copy_within(0..src_end, dst + first_len);
+        }
     }
 
     /// Returns the text content of a display row as a string.
@@ -173,6 +220,7 @@ impl NormalBuf {
     pub fn cell_mut(&mut self, display_row: usize, col: usize) -> &mut Cell {
         debug_assert!(display_row < self.visible_rows);
         debug_assert!(col < self.cols);
+        self.mark_range_dirty(display_row, col, col + 1);
         let actual_row = self.display_to_ring(display_row);
         &mut self.cells[actual_row * self.cols + col]
     }

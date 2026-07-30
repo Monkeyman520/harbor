@@ -9,10 +9,7 @@ use std::{
 
 use ::windows::{
     Win32::{
-        Foundation::{
-            CloseHandle, ERROR_NOT_FOUND, ERROR_OPERATION_ABORTED, HANDLE, WAIT_FAILED,
-            WAIT_TIMEOUT,
-        },
+        Foundation::{CloseHandle, ERROR_NOT_FOUND, HANDLE, WAIT_FAILED, WAIT_TIMEOUT},
         Storage::FileSystem::{ReadFile, WriteFile},
         System::{
             Console::{COORD, CreatePseudoConsole, HPCON, ResizePseudoConsole},
@@ -58,6 +55,11 @@ pub struct Pty {
 pub struct PtyReader {
     /// Output read end consumed by `PtyReader::read`.
     output_read: OwnedHandle,
+}
+
+/// Write-only input endpoint transferred to the terminal UI thread.
+pub struct PtyWriter {
+    input_write: OwnedHandle,
 }
 
 impl Pty {
@@ -136,15 +138,21 @@ impl Pty {
         ))
     }
 
+    /// Separates the input pipe from the resources that must remain alive until
+    /// the terminal reader has stopped. This keeps ConPTY ownership inside the
+    /// PTY crate while allowing the terminal to own its reader thread.
+    pub(crate) fn into_endpoints(mut self, reader: PtyReader) -> (PtyReader, PtyWriter, Self) {
+        let input_write = self
+            ._input_write
+            .take()
+            .expect("live pty must retain its input write handle");
+        (reader, PtyWriter { input_write }, self)
+    }
+
     pub fn resize(&mut self, size: PtySize) -> anyhow::Result<()> {
         ensure!(size.rows > 0 && size.cols > 0, "pty size must be positive");
         tracing::info!(rows = size.rows, cols = size.cols, "resizing windows pty");
         self._pseudo_console.as_mut().unwrap().resize(size)
-    }
-
-    /// Writes keyboard input bytes into the ConPTY input pipe.
-    pub(crate) fn write(&mut self, data: &[u8]) -> anyhow::Result<usize> {
-        self._input_write.as_mut().unwrap().write(data)
     }
 
     /// Starts termination of the shell process tree without blocking the caller.
@@ -414,6 +422,12 @@ fn build_environment_block() -> Vec<u16> {
     block
 }
 
+impl PtyWriter {
+    pub(crate) fn write(&mut self, data: &[u8]) -> anyhow::Result<usize> {
+        self.input_write.write(data)
+    }
+}
+
 impl PtyReader {
     pub fn read(&mut self, buffer: &mut [u8]) -> anyhow::Result<usize> {
         ensure!(!buffer.is_empty(), "pty read buffer must be non-empty");
@@ -430,12 +444,6 @@ impl PtyReader {
         .context("failed to read pty output")?;
 
         Ok(bytes_read as usize)
-    }
-
-    pub(crate) fn is_shutdown_error(error: &anyhow::Error) -> bool {
-        error
-            .downcast_ref::<::windows::core::Error>()
-            .is_some_and(|error| error.code() == HRESULT::from_win32(ERROR_OPERATION_ABORTED.0))
     }
 }
 

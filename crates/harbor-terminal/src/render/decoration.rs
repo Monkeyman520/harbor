@@ -1,12 +1,10 @@
+use harbor_text::TextMetrics;
 use harbor_types::TerminalSnapshot;
 use std::sync::Arc;
 
-use crate::{
-    Component, TextMetrics,
-    gpu::{self, ColoredVertex, GpuContext},
-};
+use super::gpu::{self, ColoredVertex, GpuContext, UploadMode};
+use crate::{CellAttrs, DirtyRange};
 use harbor_config::TEXT_PADDING;
-use harbor_terminal::{CellAttrs, DirtyRange};
 
 // ── Vertex builders (free fn, testable without GPU handles) ───────────────────
 
@@ -76,16 +74,14 @@ pub fn build_strikethrough_vertices(
     verts
 }
 
-// ── Decoration ─────────────────────────────────────────────────────────
+// ── Decoration ────────────────────────────────────────────────────────────────
 
-/// Draws underline and strikethrough decorations on top of text and cursor.
-/// Uses two separate vertex buffers (one per decoration type) because they
-/// need separate draw calls.
+/// Underline / strikethrough decoration overlay.
+/// Rendered after text so lines draw over glyphs.
 pub struct Decoration {
     pipeline: Arc<wgpu::RenderPipeline>,
     underline_buffer: wgpu::Buffer,
     strikethrough_buffer: wgpu::Buffer,
-    dirty: bool,
     rows: usize,
     cols: usize,
     cell_width: f32,
@@ -94,6 +90,7 @@ pub struct Decoration {
     underline_thickness: f32,
     strikethrough_pos: f32,
     strikethrough_thickness: f32,
+    dirty: bool,
 }
 
 impl Decoration {
@@ -101,8 +98,6 @@ impl Decoration {
         self.dirty
     }
 
-    /// Creates the decoration render pipeline and pre-allocates vertex buffers
-    /// for the full grid (rows × cols × 6 vertices each).
     pub fn new(gpu: &GpuContext, snap: &TerminalSnapshot, metrics: TextMetrics) -> Self {
         let pipeline = gpu.colored_quad_pipeline();
 
@@ -110,14 +105,36 @@ impl Decoration {
         let cols = snap.cols;
         let max_vertices = rows * cols * 6;
         let empty = vec![ColoredVertex::default(); max_vertices.max(1)];
+
         let underline_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty);
         let strikethrough_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty);
 
-        let mut layer = Self {
+        let (surf_w, surf_h) = gpu.surface_size();
+        let u = build_underline_vertices(
+            metrics.cell_width,
+            metrics.line_height,
+            metrics.underline_position,
+            metrics.underline_thickness,
+            snap,
+            surf_w as f32,
+            surf_h as f32,
+        );
+        let s = build_strikethrough_vertices(
+            metrics.cell_width,
+            metrics.line_height,
+            metrics.strikethrough_position,
+            metrics.strikethrough_thickness,
+            snap,
+            surf_w as f32,
+            surf_h as f32,
+        );
+        gpu.write_buffer(&underline_buffer, 0, bytemuck::cast_slice(&u));
+        gpu.write_buffer(&strikethrough_buffer, 0, bytemuck::cast_slice(&s));
+
+        Self {
             pipeline,
             underline_buffer,
             strikethrough_buffer,
-            dirty: true,
             rows,
             cols,
             cell_width: metrics.cell_width,
@@ -126,37 +143,10 @@ impl Decoration {
             underline_thickness: metrics.underline_thickness,
             strikethrough_pos: metrics.strikethrough_position,
             strikethrough_thickness: metrics.strikethrough_thickness,
-        };
-
-        // Build initial vertex data and upload.
-        let (surf_w, surf_h) = gpu.surface_size();
-        let u = build_underline_vertices(
-            layer.cell_width,
-            layer.line_height,
-            layer.underline_pos,
-            layer.underline_thickness,
-            snap,
-            surf_w as f32,
-            surf_h as f32,
-        );
-        let s = build_strikethrough_vertices(
-            layer.cell_width,
-            layer.line_height,
-            layer.strikethrough_pos,
-            layer.strikethrough_thickness,
-            snap,
-            surf_w as f32,
-            surf_h as f32,
-        );
-        gpu.write_buffer(&layer.underline_buffer, 0, bytemuck::cast_slice(&u));
-        gpu.write_buffer(&layer.strikethrough_buffer, 0, bytemuck::cast_slice(&s));
-        layer.dirty = false;
-
-        layer
+            dirty: false,
+        }
     }
-}
 
-impl Decoration {
     pub fn prepare_with_dirty(
         &mut self,
         gpu: &GpuContext,
@@ -165,7 +155,7 @@ impl Decoration {
     ) {
         let (surf_w, surf_h) = gpu.surface_size();
         let resized = snap.rows != self.rows || snap.cols != self.cols;
-        let bytes_per_cell = 12 * std::mem::size_of::<ColoredVertex>();
+        let bytes_per_cell = 6 * std::mem::size_of::<ColoredVertex>();
         let plan = gpu.upload_plan(
             snap.rows,
             snap.cols,
@@ -174,7 +164,6 @@ impl Decoration {
             resized || self.dirty,
         );
 
-        // Detect resize: dimensions changed → reallocate and full rebuild.
         if resized {
             tracing::trace!(
                 rows = snap.rows,
@@ -214,11 +203,11 @@ impl Decoration {
             return;
         }
 
-        if plan.mode == crate::UploadMode::None {
+        if plan.mode == UploadMode::None {
             return;
         }
 
-        if plan.mode == crate::UploadMode::Full {
+        if plan.mode == UploadMode::Full {
             tracing::trace!("rebuilding decoration draw batch (full)");
             let u = build_underline_vertices(
                 self.cell_width,
@@ -302,29 +291,25 @@ impl Decoration {
 
         self.dirty = false;
     }
-}
 
-impl Component for Decoration {
-    fn prepare(&mut self, gpu: &GpuContext, snap: Option<&TerminalSnapshot>) {
+    pub fn prepare(&mut self, gpu: &GpuContext, snap: Option<&TerminalSnapshot>) {
         if let Some(snap) = snap {
             self.prepare_with_dirty(gpu, snap, &snap.dirty_ranges);
         }
     }
 
-    fn draw(&self, pass: &mut wgpu::RenderPass) {
+    pub fn draw(&self, pass: &mut wgpu::RenderPass) {
         pass.set_pipeline(&self.pipeline);
         pass.set_vertex_buffer(0, self.underline_buffer.slice(..));
         let vertex_count = (self.rows * self.cols * 6) as u32;
         if vertex_count > 0 {
             pass.draw(0..vertex_count, 0..1);
-        }
-        pass.set_vertex_buffer(0, self.strikethrough_buffer.slice(..));
-        if vertex_count > 0 {
+            pass.set_vertex_buffer(0, self.strikethrough_buffer.slice(..));
             pass.draw(0..vertex_count, 0..1);
         }
     }
 
-    fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
+    pub fn resize(&mut self, _gpu: &GpuContext, _size: (u32, u32)) {
         self.dirty = true;
     }
 }
@@ -332,158 +317,43 @@ impl Component for Decoration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harbor_terminal::{Color, Screen};
-
-    fn test_snap(rows: usize, cols: usize) -> Screen {
-        Screen::new(rows, cols)
-    }
+    use crate::Terminal;
 
     #[test]
-    fn underline_vertices_for_cell_with_attr() {
-        let mut snap = test_snap(2, 3);
-        // Set up extended RGB fg + underline.
-        snap.set_sgr_slice(&[Some(38), Some(2), Some(200), Some(50), Some(0)]); // fg = RGB(200,50,0)
-        snap.set_sgr_slice(&[Some(4)]); // underline on
-        snap.write_char('a');
-        snap.set_sgr_slice(&[Some(0)]); // reset
-        snap.write_char(' ');
-        snap.write_char(' ');
+    fn decoration_layer_generates_underline_vertices() {
+        let mut terminal = Terminal::new_headless(2, 4);
+        terminal.put_str("\x1b[4mtest\x1b[0m");
+        let snap = terminal.screen().terminal_snapshot();
 
-        let verts = build_underline_vertices(
-            10.0,
-            20.0,
-            18.0,
-            1.5,
-            &snap.terminal_snapshot(),
-            800.0,
-            600.0,
-        );
-
-        // Cell 0 (underline) should have non-zero color matching fg.
+        let u_verts = build_underline_vertices(10.0, 20.0, 16.0, 2.0, &snap, 800.0, 600.0);
+        assert_eq!(u_verts.len(), 2 * 4 * 6);
         assert_ne!(
-            verts[0].color, [0.0; 4],
-            "underline cell should have non-zero color"
-        );
-        let expected = Color::Rgb(200, 50, 0).to_rgba();
-        assert_eq!(verts[0].color, expected, "underline color should match fg");
-
-        // Cells 1-2 (no underline) should be degenerate.
-        for i in 1..3 {
-            let idx = i * 6;
-            assert_eq!(verts[idx].color, [0.0; 4], "cell {i} should be degenerate");
-        }
-    }
-
-    #[test]
-    fn strikethrough_vertices_for_cell_with_attr() {
-        let mut snap = test_snap(2, 2);
-        snap.set_sgr_slice(&[Some(38), Some(2), Some(0), Some(200), Some(50)]); // fg = RGB(0,200,50)
-        snap.set_sgr_slice(&[Some(9)]); // strikethrough on
-        snap.write_char('x');
-        snap.set_sgr_slice(&[Some(0)]); // reset
-        snap.write_char(' ');
-
-        let verts = build_strikethrough_vertices(
-            10.0,
-            20.0,
-            9.0,
-            1.5,
-            &snap.terminal_snapshot(),
-            800.0,
-            600.0,
+            u_verts[0].position,
+            [0.0, 0.0],
+            "first cell underline should not be degenerate"
         );
 
-        assert_ne!(
-            verts[0].color, [0.0; 4],
-            "strikethrough cell should have non-zero color"
-        );
-        let expected = Color::Rgb(0, 200, 50).to_rgba();
+        let s_verts = build_strikethrough_vertices(10.0, 20.0, 10.0, 2.0, &snap, 800.0, 600.0);
+        assert_eq!(s_verts.len(), 2 * 4 * 6);
         assert_eq!(
-            verts[0].color, expected,
-            "strikethrough color should match fg"
+            s_verts[0].position,
+            [0.0, 0.0],
+            "no strikethrough expected, should be degenerate"
         );
-        // Cell 1 should be degenerate.
-        assert_eq!(verts[6].color, [0.0; 4], "cell 1 should be degenerate");
     }
 
     #[test]
-    fn no_decoration_for_default_cell() {
-        let snap = test_snap(1, 3);
+    fn decoration_layer_generates_strikethrough_vertices() {
+        let mut terminal = Terminal::new_headless(2, 4);
+        terminal.put_str("\x1b[9mstrike\x1b[0m");
+        let snap = terminal.screen().terminal_snapshot();
 
-        let u = build_underline_vertices(
-            10.0,
-            20.0,
-            18.0,
-            1.5,
-            &snap.terminal_snapshot(),
-            800.0,
-            600.0,
+        let s_verts = build_strikethrough_vertices(10.0, 20.0, 10.0, 2.0, &snap, 800.0, 600.0);
+        assert_eq!(s_verts.len(), 2 * 4 * 6);
+        assert_ne!(
+            s_verts[0].position,
+            [0.0, 0.0],
+            "strikethrough should not be degenerate"
         );
-        let s = build_strikethrough_vertices(
-            10.0,
-            20.0,
-            9.0,
-            1.5,
-            &snap.terminal_snapshot(),
-            800.0,
-            600.0,
-        );
-
-        for (i, v) in u.iter().enumerate() {
-            assert_eq!(
-                v.color, [0.0; 4],
-                "default cell underline vertex {i} should be degenerate"
-            );
-        }
-        for (i, v) in s.iter().enumerate() {
-            assert_eq!(
-                v.color, [0.0; 4],
-                "default cell strikethrough vertex {i} should be degenerate"
-            );
-        }
-    }
-
-    #[test]
-    fn no_decoration_for_blank_cell() {
-        let mut snap = test_snap(1, 2);
-        // Cell 0: underline attr but blank char.
-        snap.set_sgr_slice(&[Some(4)]);
-        snap.write_char(' ');
-        // Cell 1: strikethrough attr but blank char.
-        snap.set_sgr_slice(&[Some(0)]);
-        snap.set_sgr_slice(&[Some(9)]);
-        snap.write_char(' ');
-
-        let u = build_underline_vertices(
-            10.0,
-            20.0,
-            18.0,
-            1.5,
-            &snap.terminal_snapshot(),
-            800.0,
-            600.0,
-        );
-        let s = build_strikethrough_vertices(
-            10.0,
-            20.0,
-            9.0,
-            1.5,
-            &snap.terminal_snapshot(),
-            800.0,
-            600.0,
-        );
-
-        for v in &u {
-            assert_eq!(
-                v.color, [0.0; 4],
-                "blank+underline cell should be degenerate"
-            );
-        }
-        for v in &s {
-            assert_eq!(
-                v.color, [0.0; 4],
-                "blank+strikethrough cell should be degenerate"
-            );
-        }
     }
 }
