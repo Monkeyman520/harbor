@@ -20,8 +20,6 @@ harbor-text = { path = "crates/harbor-text" }
 # ── shared external deps (used by 2+ crates) ─────────────────────────────────
 anyhow = "1.0"
 arboard = "3.6"
-fontdb = "0.23.0"
-fontdue = "0.9"
 hashbrown = "0.17"
 tracing = "0.1"
 unicode-width = "0.2"
@@ -29,6 +27,8 @@ windows = {
   version = "0.62",
   features = [
     "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_DirectWrite",
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
@@ -38,6 +38,7 @@ windows = {
     "Win32_System_Threading",
   ]
 }
+windows-core = "0.62"
 
 # ── single-crate deps (centralized version management) ────────────────────────
 bitvec = "1.0"
