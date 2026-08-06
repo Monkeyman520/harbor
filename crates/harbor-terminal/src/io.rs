@@ -214,10 +214,10 @@ impl TerminalIo {
         for chunk in &chunks {
             self.feed_pty_output_snapped(screen, chunk);
             let replies = screen.drain_replies();
-            if !replies.is_empty() {
-                if let Err(error) = self.write_pty(&replies) {
-                    tracing::warn!(error = %error, "failed to write terminal replies to pty");
-                }
+            if !replies.is_empty()
+                && let Err(error) = self.write_pty(&replies)
+            {
+                tracing::warn!(error = %error, "failed to write terminal replies to pty");
             }
         }
         true
