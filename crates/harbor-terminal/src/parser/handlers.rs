@@ -42,22 +42,7 @@ impl VtHandler for ScreenHandler<'_> {
                     let mode = params.get_or(0, 0);
                     if mode == 6 {
                         // Private CPR (Cursor Position Report)
-                        let row = if self.screen.origin_mode() {
-                            self.screen
-                                .cursor_y()
-                                .saturating_sub(self.screen.scroll_region_top())
-                                + 1
-                        } else {
-                            self.screen.cursor_y() + 1
-                        };
-                        let col = if self.screen.origin_mode() && self.screen.margin_mode() {
-                            self.screen
-                                .cursor_x()
-                                .saturating_sub(self.screen.left_margin())
-                                + 1
-                        } else {
-                            self.screen.cursor_x() + 1
-                        };
+                        let (row, col) = self.screen.cpr_coordinates();
                         let reply = format!("\x1b[?{};{}R", row, col);
                         self.screen.push_reply(reply.as_bytes());
                     }
@@ -165,22 +150,7 @@ impl VtHandler for ScreenHandler<'_> {
                     }
                     6 => {
                         // Standard CPR
-                        let row = if self.screen.origin_mode() {
-                            self.screen
-                                .cursor_y()
-                                .saturating_sub(self.screen.scroll_region_top())
-                                + 1
-                        } else {
-                            self.screen.cursor_y() + 1
-                        };
-                        let col = if self.screen.origin_mode() && self.screen.margin_mode() {
-                            self.screen
-                                .cursor_x()
-                                .saturating_sub(self.screen.left_margin())
-                                + 1
-                        } else {
-                            self.screen.cursor_x() + 1
-                        };
+                        let (row, col) = self.screen.cpr_coordinates();
                         let reply = format!("\x1b[{};{}R", row, col);
                         self.screen.push_reply(reply.as_bytes());
                     }

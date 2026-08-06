@@ -260,7 +260,7 @@ impl DialogOverlay {
         event: &WindowEvent,
         event_loop: &ActiveEventLoop,
         gpu: Option<&GpuContext>,
-        terminal: Option<&Arc<Mutex<Terminal>>>,
+        glyph_provider: Option<&dyn harbor_terminal::GlyphProvider>,
     ) -> DialogResult {
         let Some(mut confirmation) = self.window.take() else {
             return DialogResult {
@@ -275,12 +275,9 @@ impl DialogOverlay {
             }
             confirmation::ConfirmationResult::None => {
                 if matches!(event, WindowEvent::RedrawRequested)
-                    && let (Some(gpu), Some(terminal)) = (gpu, terminal)
+                    && let (Some(gpu), Some(glyph_provider)) = (gpu, glyph_provider)
                 {
-                    let term = terminal.lock().unwrap();
-                    let frame = confirmation.render(gpu.device(), gpu.queue(), &|ch| {
-                        term.text_glyph(ch).copied()
-                    });
+                    let frame = confirmation.render(gpu.device(), gpu.queue(), glyph_provider);
                     confirmation.apply_frame_effects(&frame, event_loop);
                     if let Some(error) = frame.fatal_error().cloned() {
                         DialogOutcome::Fatal(error)
@@ -469,12 +466,15 @@ impl ApplicationHandler<AppEvent> for App {
     ) {
         let dialog_window_id = self.runtime.dialog.window_id();
         if dialog_window_id == Some(window_id) {
-            let result = self.runtime.dialog.handle_event(
-                &event,
-                event_loop,
-                self.runtime.gpu.as_ref(),
-                self.runtime.terminal.as_ref(),
-            );
+            let result = {
+                let term_guard = self.runtime.terminal.as_ref().map(|t| t.lock().unwrap());
+                let glyph_provider = term_guard
+                    .as_ref()
+                    .map(|t| &**t as &dyn harbor_terminal::GlyphProvider);
+                let dialog = &mut self.runtime.dialog;
+                let gpu = self.runtime.gpu.as_ref();
+                dialog.handle_event(&event, event_loop, gpu, glyph_provider)
+            };
             match &result.outcome {
                 DialogOutcome::Cancelled => {
                     self.request_main_frame(event_loop);

@@ -134,16 +134,25 @@ impl Screen {
         std::mem::take(&mut self.replies)
     }
 
-    pub fn origin_mode(&self) -> bool {
-        self.cursor.modes.origin
-    }
-
-    pub fn left_margin(&self) -> usize {
-        self.cursor.margins.left
-    }
-
-    pub fn scroll_region_top(&self) -> usize {
-        self.cursor.scroll_region.top
+    /// Returns the 1-based (row, col) coordinates relative to origin/margins if DECOM is enabled.
+    pub fn cpr_coordinates(&self) -> (usize, usize) {
+        let row = if self.cursor.modes.origin {
+            self.cursor
+                .cursor_y(&self.normal)
+                .saturating_sub(self.cursor.scroll_region.top)
+                + 1
+        } else {
+            self.cursor.cursor_y(&self.normal) + 1
+        };
+        let col = if self.cursor.modes.origin && self.cursor.margins.enabled {
+            self.cursor
+                .cursor_x()
+                .saturating_sub(self.cursor.margins.left)
+                + 1
+        } else {
+            self.cursor.cursor_x() + 1
+        };
+        (row, col)
     }
 
     pub fn set_cursor_style(&mut self, arg: CursorStyleArg) {

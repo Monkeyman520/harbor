@@ -377,7 +377,7 @@ impl ConfirmationWindow {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        glyph_fn: &harbor_widget::text::GlyphFn<'_>,
+        glyph_provider: &dyn harbor_terminal::GlyphProvider,
     ) -> FrameOutcome {
         let ConfirmationWindow {
             window,
@@ -401,7 +401,7 @@ impl ConfirmationWindow {
             wgpu::Color::BLACK,
         );
         adapter.render_with_prepare(runtime, target, |runtime| {
-            runtime.prepare_text_runs(glyph_fn);
+            runtime.prepare_text_runs(&|ch| glyph_provider.text_glyph(ch));
         })
     }
 
