@@ -56,6 +56,8 @@ pub struct Screen {
     alt: AltScreenStack,
     /// Saved normal-screen state while the alternate screen is active.
     alt_saved: Option<Box<Screen>>,
+    /// Outgoing VT replies buffer.
+    pub(crate) replies: Vec<u8>,
 }
 
 impl Screen {
@@ -68,6 +70,7 @@ impl Screen {
             pen_state: PenState::new(cols),
             alt: AltScreenStack::new(),
             alt_saved: None,
+            replies: Vec::new(),
         }
     }
 
@@ -117,6 +120,30 @@ impl Screen {
 
     pub fn cursor_visible(&self) -> bool {
         self.cursor.cursor_visible()
+    }
+
+    pub fn push_reply(&mut self, reply: &[u8]) {
+        if self.replies.len() + reply.len() <= 1024 {
+            self.replies.extend_from_slice(reply);
+        } else {
+            tracing::warn!("Terminal reply buffer limit (1024 bytes) reached. Discarding reply.");
+        }
+    }
+
+    pub fn drain_replies(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.replies)
+    }
+
+    pub fn origin_mode(&self) -> bool {
+        self.cursor.modes.origin
+    }
+
+    pub fn left_margin(&self) -> usize {
+        self.cursor.margins.left
+    }
+
+    pub fn scroll_region_top(&self) -> usize {
+        self.cursor.scroll_region.top
     }
 
     pub fn set_cursor_style(&mut self, arg: CursorStyleArg) {

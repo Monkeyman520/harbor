@@ -38,6 +38,30 @@ impl VtHandler for ScreenHandler<'_> {
                 }
                 b'J' => self.screen.selective_erase_display(params.get_or(0, 0)),
                 b'K' => self.screen.selective_erase_line(params.get_or(0, 0)),
+                b'n' => {
+                    let mode = params.get_or(0, 0);
+                    if mode == 6 {
+                        // Private CPR (Cursor Position Report)
+                        let row = if self.screen.origin_mode() {
+                            self.screen
+                                .cursor_y()
+                                .saturating_sub(self.screen.scroll_region_top())
+                                + 1
+                        } else {
+                            self.screen.cursor_y() + 1
+                        };
+                        let col = if self.screen.origin_mode() && self.screen.margin_mode() {
+                            self.screen
+                                .cursor_x()
+                                .saturating_sub(self.screen.left_margin())
+                                + 1
+                        } else {
+                            self.screen.cursor_x() + 1
+                        };
+                        let reply = format!("\x1b[?{};{}R", row, col);
+                        self.screen.push_reply(reply.as_bytes());
+                    }
+                }
                 _ => {
                     tracing::warn!(
                         "unsupported private CSI sequence: params={:?} final=0x{action:02x}",
@@ -132,6 +156,37 @@ impl VtHandler for ScreenHandler<'_> {
             b'M' => self.screen.delete_lines(params.get_or(0, 1)),
             b'S' => self.screen.scroll_up_region(params.get_or(0, 1)),
             b'T' => self.screen.scroll_down_region(params.get_or(0, 1)),
+            b'n' => {
+                let mode = params.get_or(0, 0);
+                match mode {
+                    5 => {
+                        // Device Status Report: status OK
+                        self.screen.push_reply(b"\x1b[0n");
+                    }
+                    6 => {
+                        // Standard CPR
+                        let row = if self.screen.origin_mode() {
+                            self.screen
+                                .cursor_y()
+                                .saturating_sub(self.screen.scroll_region_top())
+                                + 1
+                        } else {
+                            self.screen.cursor_y() + 1
+                        };
+                        let col = if self.screen.origin_mode() && self.screen.margin_mode() {
+                            self.screen
+                                .cursor_x()
+                                .saturating_sub(self.screen.left_margin())
+                                + 1
+                        } else {
+                            self.screen.cursor_x() + 1
+                        };
+                        let reply = format!("\x1b[{};{}R", row, col);
+                        self.screen.push_reply(reply.as_bytes());
+                    }
+                    _ => {}
+                }
+            }
             b'h' | b'l' => {
                 let enabled = action == b'h';
                 for param in params.iter_flat().flatten() {
