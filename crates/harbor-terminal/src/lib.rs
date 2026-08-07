@@ -12,7 +12,7 @@ mod terminal_tests;
 // Re-exports for the main crate.
 pub use damage::DirtyRange;
 use harbor_pty::PtyControl;
-pub use harbor_text::{AtlasGlyph, FontBook, GlyphProvider, TextMetrics, load_system_fonts};
+pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts};
 pub use harbor_types::should_confirm_multiline;
 pub use harbor_types::{
     InputModes, PasteDisposition, TerminalSize, TerminalSnapshot, UpdateDamage, safe_preview_line,
@@ -305,11 +305,5 @@ impl Terminal {
 
     pub fn is_alt_screen(&self) -> bool {
         self.screen.is_alt()
-    }
-}
-
-impl harbor_text::GlyphProvider for Terminal {
-    fn text_glyph(&self, ch: char) -> Option<harbor_text::AtlasGlyph> {
-        self.text_glyph(ch).copied()
     }
 }

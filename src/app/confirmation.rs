@@ -18,6 +18,7 @@ use harbor_terminal::{GpuContext, TextMetrics};
 use harbor_types::safe_preview_line;
 use harbor_widget::effects::ControlFlowEffect;
 use harbor_widget::runtime::Runtime;
+use harbor_widget::text::GlyphFn;
 use harbor_widget::widgets::button::Button;
 use harbor_widget::widgets::column::Column;
 use harbor_widget::widgets::focus_scope::FocusScope;
@@ -377,7 +378,7 @@ impl ConfirmationWindow {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        glyph_provider: &dyn harbor_terminal::GlyphProvider,
+        glyph_fn: &GlyphFn,
     ) -> FrameOutcome {
         let ConfirmationWindow {
             window,
@@ -401,7 +402,7 @@ impl ConfirmationWindow {
             wgpu::Color::BLACK,
         );
         adapter.render_with_prepare(runtime, target, |runtime| {
-            runtime.prepare_text_runs(&|ch| glyph_provider.text_glyph(ch));
+            runtime.prepare_text_runs(glyph_fn);
         })
     }
 

@@ -15,8 +15,3 @@ pub use contracts::{
 };
 pub use font::{FontBook, load_system_fonts};
 pub use metrics::{FontMetrics, TextMetrics};
-
-/// Trait for looking up an AtlasGlyph for a character, decoupling UI components from the terminal.
-pub trait GlyphProvider {
-    fn text_glyph(&self, ch: char) -> Option<AtlasGlyph>;
-}
