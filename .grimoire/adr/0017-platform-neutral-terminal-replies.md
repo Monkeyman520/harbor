@@ -1,4 +1,4 @@
-# ADR-0004: Platform-neutral terminal replies via Screen buffer
+# ADR-0017: Platform-neutral terminal replies via Screen buffer
 
 **Status:** Proposed
 **Date:** 2026-08-06
