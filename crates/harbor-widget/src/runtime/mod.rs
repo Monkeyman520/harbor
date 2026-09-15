@@ -1,7 +1,10 @@
 mod event_router;
 mod frame_encoder;
 
-use crate::effects::{ClipboardEffect, ControlFlowEffect, ExternalInvalidation, RuntimeEffects};
+use crate::effects::{
+    ClipboardEffect, ControlFlowEffect, CursorEffect, ExternalInvalidation, ImeEffect,
+    RuntimeEffects,
+};
 use crate::fiber::{
     DirtyFlags, Fiber, FiberArena, FiberId, LayoutOutcome, layout_fiber, paint_fiber,
     reconcile_children_with_externals, unmount_fiber,
@@ -12,18 +15,21 @@ use crate::input::event_ctx::EventCtx;
 use crate::input::state::InputState;
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::renderer::Viewport;
-use crate::renderer::widget_text_atlas::WidgetTextAtlas;
 use crate::runtime::event_router::EventRouter;
 use crate::runtime::frame_encoder::{EncodeScene, FrameEncoder};
-use crate::scene::primitive::{ExternalDrawFn, ExternalDrawId, ExternalScheduleFn};
+use crate::scene::primitive::{
+    ExternalDrawFn, ExternalDrawGpu, ExternalDrawId, ExternalScheduleFn,
+};
 use crate::scene::{SceneDelta, SceneGraph};
 use crate::signal::{RuntimeId, RuntimeScope, mark_dirty_for, remove_runtime, take_dirty};
-use crate::text::{TextMetrics, TextRunCache, text_metrics_equal};
+#[cfg(test)]
+use crate::text::TextRunCache;
+use crate::text::{TextMetrics, text_metrics_equal};
 use crate::theme::Theme;
 use crate::view::{BuildCx, Component, ExternalRegistrations};
 use hashbrown::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
-use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 // ── Runtime ─────────────────────────────────────────────────────────────────
 
@@ -55,7 +61,6 @@ pub struct Runtime {
     root_id: Option<FiberId>,
     root_component: Option<Box<dyn Component>>,
     text_metrics: TextMetrics,
-    text_atlas: Option<Rc<RefCell<WidgetTextAtlas>>>,
     scene_graph: SceneGraph,
     next_scene_item_id: u64,
     pending_delta: Option<SceneDelta>,
@@ -90,7 +95,6 @@ impl Runtime {
             root_id: None,
             root_component: None,
             text_metrics,
-            text_atlas: None,
             scene_graph: SceneGraph::new(),
             next_scene_item_id: 1,
             pending_delta: None,
@@ -119,16 +123,75 @@ impl Runtime {
         self.invalidate_layout();
     }
 
-    /// Sets the root component and performs the initial build + layout.
-    ///
-    /// If a previous root existed, it is unmounted recursively.
-    pub fn set_root(&mut self, root: impl Component + 'static) {
+    /// Drops the mounted tree and resets all state derived from it.
+    pub(crate) fn clear_root(&mut self) {
         let _scope = RuntimeScope::enter(self.runtime_id);
 
-        // Unmount old root if present
-        if let Some(old_root) = self.root_id.take() {
-            unmount_fiber(&mut self.arena, old_root);
+        // Detach every old-generation owner before invoking unmount hooks. If a
+        // hook panics, unwinding drops this detached closure environment while the
+        // Runtime itself already contains only generation-neutral state.
+        let old_root = self.root_id.take();
+        let old_root_component = self.root_component.take();
+        let mut old_arena = std::mem::take(&mut self.arena);
+        let old_external_draws = std::mem::take(&mut self.external_draws);
+        let old_external_schedules = std::mem::take(&mut self.external_schedules);
+        let old_external_eligible = std::mem::take(&mut self.external_eligible);
+        let old_layout_notifications = std::mem::take(&mut self.pending_layout_notifications);
+        let old_events = std::mem::replace(&mut self.events, EventRouter::new());
+        remove_runtime(self.runtime_id);
+
+        let removal = self.scene_graph.diff(Vec::new());
+        if let Some(pending_delta) = &mut self.pending_delta {
+            pending_delta.coalesce(removal);
+        } else {
+            self.pending_delta = Some(removal);
         }
+
+        self.pending_effects = RuntimeEffects {
+            request_redraw: true,
+            cursor: Some(CursorEffect::reset()),
+            ime: Some(ImeEffect::set_allowed(false)),
+            ..RuntimeEffects::default()
+        };
+
+        let unmount_panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Some(root_id) = old_root {
+                unmount_fiber(&mut old_arena, root_id);
+            }
+        }))
+        .is_err();
+        // Remove any fibers left behind by a panicking unmount hook, then retain
+        // the emptied arena so its slot generations continue rejecting stale IDs.
+        old_arena.clear();
+        self.arena = old_arena;
+
+        let drop_panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            drop((
+                old_root_component,
+                old_external_draws,
+                old_external_schedules,
+                old_external_eligible,
+                old_layout_notifications,
+                old_events,
+            ));
+        }))
+        .is_err();
+        if unmount_panicked || drop_panicked {
+            tracing::error!("widget root teardown callback panicked after state was detached");
+        }
+    }
+
+    /// Sets the root component and performs the initial build + layout.
+    ///
+    /// If a previous root existed, it is torn down before the replacement is built.
+    pub fn set_root(&mut self, root: impl Component + 'static) {
+        let pending_focus_handle = self.events.pending_focus_handle();
+        if self.root_id.is_some() || self.root_component.is_some() {
+            self.clear_root();
+            self.events
+                .restore_pending_focus_handle(pending_focus_handle);
+        }
+        let _scope = RuntimeScope::enter(self.runtime_id);
 
         // Create a temporary root fiber
         let root_fiber = Fiber::new(
@@ -422,7 +485,7 @@ impl Runtime {
         self.encoder.init_renderer(device, format);
     }
 
-    /// Initializes Runtime-owned Widget text resources and renderer using system default UI fonts.
+    /// Initializes encoder-owned Widget text resources using system default UI fonts.
     pub fn init_text_renderer(
         &mut self,
         device: &wgpu::Device,
@@ -432,17 +495,8 @@ impl Runtime {
         let fonts = harbor_text::load_system_ui_fonts()?;
         let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
         self.set_text_metrics(metrics);
-        let atlas = Rc::new(RefCell::new(WidgetTextAtlas::new(device, queue, fonts)));
-        {
-            let atlas_ref = atlas.borrow();
-            self.encoder.init_text_renderer(
-                device,
-                format,
-                atlas_ref.bind_group_layout(),
-                atlas_ref.bind_group(),
-            );
-        }
-        self.text_atlas = Some(atlas);
+        self.encoder
+            .init_text_resources(device, queue, format, fonts);
         Ok(())
     }
 
@@ -450,18 +504,9 @@ impl Runtime {
     pub fn create_child_runtime(&self, device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let mut runtime = Self::with_text_metrics(self.text_metrics);
         runtime.init_renderer(device, format);
-        if let Some(atlas) = &self.text_atlas {
-            {
-                let atlas_ref = atlas.borrow();
-                runtime.encoder.init_text_renderer(
-                    device,
-                    format,
-                    atlas_ref.bind_group_layout(),
-                    atlas_ref.bind_group(),
-                );
-            }
-            runtime.text_atlas = Some(Rc::clone(atlas));
-        }
+        runtime
+            .encoder
+            .inherit_text_resources(&self.encoder, device, format);
         runtime
     }
 
@@ -484,13 +529,13 @@ impl Runtime {
     /// `commit` live-encodes ineligible externals this pass (recovery / force).
     pub fn encode<'a>(
         &'a mut self,
-        queue: &wgpu::Queue,
+        gpu: ExternalDrawGpu<'a>,
         pass: &mut wgpu::RenderPass<'a>,
         viewport: Viewport,
         commit: bool,
     ) {
         self.encoder.encode(
-            queue,
+            gpu,
             pass,
             viewport,
             EncodeScene {
@@ -592,27 +637,12 @@ impl Runtime {
         }
     }
 
-    /// Ensures glyphs and prepares cached text runs using Runtime-owned resources.
+    /// Ensures glyphs and prepares cached text runs through the frame encoder.
     ///
     /// Call after Runtime update/paint and before encoding the frame.
     pub fn prepare_text(&mut self, queue: &wgpu::Queue) {
-        let Some(atlas) = self.text_atlas.as_ref().map(Rc::clone) else {
-            return;
-        };
-        let mut atlas = atlas.borrow_mut();
-        let revision = atlas.ensure_scene_text(
-            self.scene_graph.items().iter().filter_map(|item| {
-                if let crate::scene::primitive::Primitive::Text { text, .. } = &item.primitive {
-                    Some(text.as_ref())
-                } else {
-                    None
-                }
-            }),
-            queue,
-        );
-        let glyph_fn = |ch| atlas.glyph(ch).copied();
         self.encoder
-            .prepare_text_runs(&self.scene_graph, &self.text_metrics, revision, &glyph_fn);
+            .prepare_text(&self.scene_graph, &self.text_metrics, queue);
     }
 
     #[cfg(test)]
@@ -648,7 +678,7 @@ impl Runtime {
     /// Drains queued external input events produced by focusable CustomPaint
     /// widgets during the last event dispatch.
     pub fn drain_external_input(
-        &self,
+        &mut self,
     ) -> Vec<(
         crate::scene::primitive::ExternalDrawId,
         crate::input::event::UiEvent,
@@ -678,6 +708,7 @@ impl Runtime {
         }
     }
 
+    #[cfg(test)]
     /// Returns a mutable reference to the TextRunCache.
     /// The host uses this to look up glyph data for text rendering.
     pub fn text_run_cache(&mut self) -> &mut TextRunCache {
@@ -773,11 +804,7 @@ fn valid_layout_notification_rect(rect: Rect) -> bool {
 
 impl Drop for Runtime {
     fn drop(&mut self) {
-        let _scope = RuntimeScope::enter(self.runtime_id);
-        if let Some(root_id) = self.root_id.take() {
-            unmount_fiber(&mut self.arena, root_id);
-        }
-        remove_runtime(self.runtime_id);
+        self.clear_root();
     }
 }
 
@@ -789,20 +816,143 @@ mod tests {
     };
     use crate::input::event_ctx::EventCtx;
     use crate::scene::primitive::ExternalScheduleDemand;
+    use crate::view::View;
     use crate::widgets::button::Button;
     use crate::widgets::column::Column;
     use crate::widgets::custom_paint::CustomPaint;
+    use crate::widgets::focus::Focus;
     use crate::widgets::focus_scope::FocusScope;
+    use crate::widgets::layout_observer::LayoutObserver;
     use crate::widgets::sized_box::SizedBox;
     use crate::widgets::text_label::TextLabel;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
     fn now() -> Instant {
         Instant::now()
     }
 
+    struct TeardownProbeRoot {
+        drops: Arc<AtomicUsize>,
+        callback_probe: Arc<()>,
+    }
+
+    impl Drop for TeardownProbeRoot {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl Component for TeardownProbeRoot {
+        fn build(&self, cx: &mut BuildCx) -> View {
+            let draw_probe = Arc::clone(&self.callback_probe);
+            let schedule_probe = Arc::clone(&self.callback_probe);
+            let layout_probe = Arc::clone(&self.callback_probe);
+            let draw: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, _, _| {
+                let _ = &draw_probe;
+            });
+            let schedule: Arc<ExternalScheduleFn> = Arc::new(move |_, _| {
+                let _ = &schedule_probe;
+                ExternalScheduleDemand::empty()
+            });
+            LayoutObserver::new(move |_| {
+                let _ = &layout_probe;
+            })
+            .child(CustomPaint::new(91).handler(draw).schedule(schedule))
+            .build(cx)
+        }
+    }
+
+    #[test]
+    fn clear_root_drops_tree_callbacks_and_resets_root_derived_state() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let callback_probe = Arc::new(());
+        let weak_callback = Arc::downgrade(&callback_probe);
+        let mut rt = Runtime::new();
+        let viewport = Viewport::new(640, 480, 1.0);
+        rt.set_viewport(viewport.clone());
+        rt.set_root(TeardownProbeRoot {
+            drops: Arc::clone(&drops),
+            callback_probe,
+        });
+        assert!(rt.update(now()).request_redraw);
+        assert!(rt.focus_first_focusable());
+        assert!(rt.has_external_draws());
+        assert!(weak_callback.upgrade().is_some());
+        let scene_count = rt.scene_graph.item_count();
+        assert!(scene_count > 0);
+        let _presented_delta = rt.pending_delta.take().expect("initial scene delta");
+        let old_root = rt.root_id.expect("mounted root");
+
+        rt.clear_root();
+
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert!(weak_callback.upgrade().is_none());
+        assert!(rt.root_id.is_none());
+        assert!(!rt.arena.contains(old_root));
+        assert!(rt.external_draws.is_empty());
+        assert!(rt.external_schedules.is_empty());
+        assert!(rt.external_eligible.is_empty());
+        assert!(rt.pending_layout_notifications.is_empty());
+        assert!(rt.scene_graph.items().is_empty());
+        assert!(rt.input().focused.is_none());
+        assert_eq!(rt.current_viewport(), Some(&viewport));
+        let delta = rt.pending_delta.as_ref().expect("root removal delta");
+        assert_eq!(delta.removed.len(), scene_count);
+        assert!(rt.pending_effects.request_redraw);
+        assert_eq!(rt.pending_effects.cursor, Some(CursorEffect::Reset));
+        assert_eq!(rt.pending_effects.ime, Some(ImeEffect::set_allowed(false)));
+
+        rt.clear_root();
+        rt.set_root(SizedBox::new(Size::new(10.0, 10.0)));
+        let new_root = rt.root_id.expect("replacement root");
+        assert!(rt.arena.contains(new_root));
+        assert_ne!(new_root, old_root);
+    }
+
+    #[test]
+    fn set_root_preserves_a_pending_stable_focus_request() {
+        let handle = crate::widgets::FocusHandle::new();
+        let mut rt = Runtime::new();
+        rt.set_root(SizedBox::new(Size::new(1.0, 1.0)));
+        rt.request_focus(&handle);
+
+        rt.set_root(Focus::new(Button::new("replacement")).handle(handle));
+
+        assert!(rt.input().focused().is_some());
+    }
+
+    struct PanicOnUnsubscribe;
+
+    impl crate::signal::Hook for PanicOnUnsubscribe {
+        fn unsubscribe_all(&self, _id: FiberId) {
+            panic!("unsubscribe panic probe");
+        }
+
+        fn as_any_ref(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    #[test]
+    fn clear_root_contains_unsubscribe_panics_after_detaching_old_state() {
+        let mut rt = Runtime::new();
+        rt.set_root(SizedBox::new(Size::new(1.0, 1.0)));
+        let root = rt.root_id.expect("mounted root");
+        rt.arena
+            .get_mut(root)
+            .expect("mounted fiber")
+            .hooks
+            .push(Box::new(PanicOnUnsubscribe));
+
+        rt.clear_root();
+
+        assert!(rt.root_id.is_none());
+        assert!(!rt.arena.contains(root));
+        assert!(rt.external_draws.is_empty());
+        assert!(rt.scene_graph.items().is_empty());
+    }
     #[test]
     fn dispatch_does_not_attribute_pending_focus_redraw_to_consumed_keyboard_event() {
         use crate::input::event_ctx::EventHandled;
@@ -848,7 +998,7 @@ mod tests {
                 self.0.set(self.0.get() + 1);
                 // Fresh registrations on each build make identity checks detect
                 // even a rebuild which otherwise emits identical scene content.
-                let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _| {});
+                let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
                 let schedule: Arc<ExternalScheduleFn> =
                     Arc::new(|_, _| ExternalScheduleDemand::empty());
                 Row::new()
@@ -880,7 +1030,8 @@ mod tests {
             .added
             .iter()
             .find_map(|item| {
-                matches!(item.primitive, Primitive::External { draw: 42, .. }).then_some(item.id)
+                matches!(item.primitive, Primitive::External { draw, .. } if draw == 42)
+                    .then_some(item.id)
             })
             .unwrap();
         let draw = rt.external_draws[&42].clone();
@@ -901,7 +1052,7 @@ mod tests {
         assert_eq!(resized.modified.len(), 1);
         assert_eq!(resized.modified[0].id, external_id);
         assert!(matches!(resized.modified[0].primitive,
-            Primitive::External { rect, draw: 42 } if rect.size() == Size::new(999.0, 80.0)));
+            Primitive::External { rect, draw } if draw == 42 && rect.size() == Size::new(999.0, 80.0)));
         assert_eq!(
             rt.scene_graph
                 .items()
@@ -1496,7 +1647,7 @@ mod tests {
 
     #[test]
     fn runtime_with_custom_paint_root_reports_external_draws() {
-        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _| {});
+        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
         let mut rt = Runtime::new();
         rt.set_root(CustomPaint::new(77).handler(handler));
         rt.update(now());
@@ -1525,7 +1676,7 @@ mod tests {
 
     #[test]
     fn should_report_external_draws_when_handler_is_nested_in_subtree() {
-        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _| {});
+        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
         let mut rt = Runtime::new();
         rt.set_root(Column::new().child(CustomPaint::new(79).handler(handler)));
         rt.update(now());
@@ -1535,7 +1686,7 @@ mod tests {
 
     #[test]
     fn should_drop_external_draws_when_root_is_replaced_with_plain_widget() {
-        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _| {});
+        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
         let mut rt = Runtime::new();
         rt.set_root(CustomPaint::new(80).handler(handler));
         rt.update(now());
@@ -2131,7 +2282,7 @@ mod tests {
         let seen = Arc::new(AtomicU64::new(0));
         let seen_id = Arc::clone(&seen);
         let schedule: Arc<ExternalScheduleFn> = Arc::new(move |id, _| {
-            seen_id.store(id, Ordering::SeqCst);
+            seen_id.store(id.get(), Ordering::SeqCst);
             ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();

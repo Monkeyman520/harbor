@@ -5,19 +5,26 @@
 
 use harbor_widget::effects::ExternalInvalidation;
 
-use crate::tab_manager::TabId;
+use harbor_app::tab_manager::TabId;
 
 /// Events posted back to the winit event loop from background workers.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub(crate) enum AppEvent {
     /// The terminal reader queued output for one Host-owned session.
     TerminalOutputReady(TabId),
+    /// Opaque adapter work transported to the owning main-window Host.
+    #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+    WidgetHostWork(harbor_widget::winit::WidgetHmrWork),
 }
 
 /// Maps host wake events to source-agnostic runtime invalidation.
-pub(crate) fn external_invalidation_for_app_event(event: AppEvent) -> Option<ExternalInvalidation> {
+pub(crate) fn external_invalidation_for_app_event(
+    event: &AppEvent,
+) -> Option<ExternalInvalidation> {
     match event {
         AppEvent::TerminalOutputReady(_) => Some(ExternalInvalidation::new()),
+        #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
+        AppEvent::WidgetHostWork(_) => None,
     }
 }
 
@@ -29,7 +36,7 @@ mod tests {
     fn terminal_output_event_maps_only_to_generic_external_invalidation() {
         let event = AppEvent::TerminalOutputReady(TabId(7));
         assert_eq!(
-            external_invalidation_for_app_event(event),
+            external_invalidation_for_app_event(&event),
             Some(ExternalInvalidation::new())
         );
     }

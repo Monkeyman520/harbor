@@ -24,6 +24,24 @@ cargo run
 
 🪟 Harbor currently requires Windows for an operational PTY session.
 
+### Debug widget hot reload (Windows)
+
+Build the reloadable UI library first, then keep it rebuilding in one terminal:
+
+```bash
+cargo install cargo-watch
+cargo build -p harbor-app-ui
+cargo watch -w crates/harbor-app/src/ui.rs -w crates/harbor-app-ui/src -x "build -p harbor-app-ui"
+```
+
+Run the persistent Runtime Host in another terminal:
+
+```bash
+cargo run --features widget-hot-reload
+```
+
+The optional HMR observer, teardown barrier, generation state machine, Runtime root replacement, and redraw scheduling are owned by `harbor-widget::winit`; Harbor only provides the `harbor_app_ui` root factory and transports opaque Host work. This mode retains the Host window, GPU resources, Store-published tab state, terminals, and PTYs while resetting Widget/Fiber-local state. Changes to `harbor-widget`, shared `harbor-app` contract types (including `MainWindowRootInputs`), dependency layout, or exported function signatures require stopping the watcher and fully rebuilding/restarting the Host. Ordinary, release, and unsupported-target builds do not start a reload observer.
+
 ## ⚙️ Startup Configuration
 
 Copy [`config.example.toml`](config.example.toml) to `~/.harbor/config.toml`. Harbor reads it once at startup; it does not create a missing file or hot-reload changes.
@@ -50,8 +68,8 @@ cargo run --profile dhat --features dhat-heap
 
 ```text
 winit events
-    -> harbor-widget WinitAdapter
-    -> Runtime event routing and frame scheduling
+    -> Shell ApplicationHandler
+    -> harbor-widget WinitWindowHost (Window, Surface, Runtime, Scheduler, Presentation)
     -> Terminal CustomPaint
        -> harbor-parser
        -> terminal screen and input model
@@ -59,7 +77,7 @@ winit events
        -> wgpu terminal renderer
 ```
 
-The application owns windows and long-lived GPU resources. The feature-gated widget winit integration borrows those resources per frame to acquire, encode, submit, and present. Each OS window has an independent widget runtime.
+The feature-gated `harbor-widget::winit` integration owns per-window `Window`, `Surface`, `Runtime`, scheduling, presentation, and shared GPU resources ([ADR-0031](.grimoire/adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md)). The application shell coordinates `ApplicationHandler`, multi-window routing, terminal tabs, PTYs, paste safety, and business policy. Each OS window has an independent widget runtime.
 
 ## 📚 Documentation
 

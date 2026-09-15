@@ -1,29 +1,172 @@
 //! Frame presentation: acquisition policy, wgpu encode sequence, and frame outcomes.
 
-use super::WinitAdapter;
-use crate::effects::RuntimeEffects;
+use super::{SharedGpu, WindowSurface, WinitAdapter};
+use crate::effects::{ExternalInvalidation, RuntimeEffects};
 use crate::renderer::Viewport;
 use crate::runtime::Runtime;
+use crate::scene::primitive::ExternalDrawGpu;
+use crate::winit::scheduler::FrameScheduler;
+use crate::winit::surface::SurfaceState;
 use std::time::Instant;
+use winit::event::WindowEvent;
 use winit::window::Window;
 
-impl WinitAdapter {
-    /// Executes one complete integration frame.
-    pub fn render<'frame, 'surface>(
-        &mut self,
-        runtime: &mut Runtime,
-        target: WinitFrameTarget<'frame, 'surface>,
-    ) -> FrameOutcome {
-        self.render_with_prepare(runtime, target, |_| {})
+/// Owns per-window surface state, frame scheduling, and GPU presentation policy.
+pub struct WindowPresenter {
+    scheduler: FrameScheduler,
+    surface_state: SurfaceState,
+}
+
+impl WindowPresenter {
+    pub fn new(width: u32, height: u32, scale: f32) -> Self {
+        Self {
+            scheduler: FrameScheduler::default(),
+            surface_state: SurfaceState::new(width, height, scale),
+        }
     }
 
+    pub fn from_window(window: &Window) -> Self {
+        let size = window.inner_size();
+        Self::new(size.width, size.height, window.scale_factor() as f32)
+    }
+
+    pub fn viewport(&self) -> &Viewport {
+        self.surface_state.viewport()
+    }
+
+    pub fn set_drawable(&mut self, drawable: bool) -> RuntimeEffects {
+        self.scheduler.set_drawable(drawable)
+    }
+
+    pub fn fold_effects(&mut self, effects: RuntimeEffects) -> RuntimeEffects {
+        self.scheduler.schedule_retaining_ineligibility(effects)
+    }
+
+    pub fn invalidate_external(
+        &mut self,
+        runtime: &mut Runtime,
+        work: ExternalInvalidation,
+    ) -> RuntimeEffects {
+        self.surface_state.reset_recovery_budget();
+        self.fold_effects(runtime.invalidate_external(work))
+    }
+
+    pub fn redraw_requested(&mut self, runtime: &mut Runtime, now: Instant) -> RuntimeEffects {
+        self.scheduler.frame_started(runtime.update(now))
+    }
+
+    pub fn frame_completed(&mut self, now: Instant) -> RuntimeEffects {
+        self.scheduler.frame_completed(now)
+    }
+
+    pub fn about_to_wait(
+        &mut self,
+        runtime: &mut Runtime,
+        now: Instant,
+        host_deadline: Option<Instant>,
+    ) -> RuntimeEffects {
+        let due_redraw = self.scheduler.consume_due_deadline(now);
+        let mut dirty_effects = runtime.update(now);
+        if due_redraw {
+            dirty_effects.request_redraw = true;
+        }
+        let mut scheduled = self.scheduler.schedule(dirty_effects);
+        scheduled.control_flow = None;
+        self.scheduler
+            .about_to_wait(now, host_deadline)
+            .merged(&scheduled)
+    }
+
+    pub fn request_frame(&mut self) -> RuntimeEffects {
+        self.scheduler.request_frame()
+    }
+
+    pub fn handle_event_with_size(
+        &mut self,
+        adapter: &mut WinitAdapter,
+        runtime: &mut Runtime,
+        event: &WindowEvent,
+        physical_size: Option<(u32, u32)>,
+    ) -> crate::winit::WinitEventOutcome {
+        if let Some(outcome) = self.handle_surface_event(adapter, runtime, event, physical_size) {
+            return outcome;
+        }
+        let mut outcome = adapter.handle_event_with_size(runtime, event, physical_size);
+        outcome.effects = self.fold_effects(outcome.effects);
+        outcome
+    }
+
+    pub fn handle_event(
+        &mut self,
+        adapter: &mut WinitAdapter,
+        runtime: &mut Runtime,
+        event: &WindowEvent,
+    ) -> crate::winit::WinitEventOutcome {
+        self.handle_event_with_size(adapter, runtime, event, None)
+    }
+
+    pub(crate) fn handle_surface_event(
+        &mut self,
+        adapter: &mut WinitAdapter,
+        runtime: &mut Runtime,
+        event: &WindowEvent,
+        physical_size: Option<(u32, u32)>,
+    ) -> Option<crate::winit::WinitEventOutcome> {
+        match event {
+            WindowEvent::Resized(size) => Some(self.handle_surface_transition(
+                adapter,
+                runtime,
+                size.width,
+                size.height,
+                adapter.scale_factor,
+            )),
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                adapter.set_scale_factor(*scale_factor as f32);
+                let (width, height) =
+                    physical_size.unwrap_or(self.surface_state.viewport().physical_size);
+                Some(self.handle_surface_transition(
+                    adapter,
+                    runtime,
+                    width,
+                    height,
+                    adapter.scale_factor,
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn handle_surface_transition(
+        &mut self,
+        adapter: &mut WinitAdapter,
+        runtime: &mut Runtime,
+        width: u32,
+        height: u32,
+        scale: f32,
+    ) -> crate::winit::WinitEventOutcome {
+        let was_drawable = self.surface_state.can_acquire();
+        let changed = self.surface_state.update(width, height, scale);
+        runtime.set_viewport(self.surface_state.viewport().clone());
+        let mut effects = self.set_drawable(self.surface_state.can_acquire());
+        if was_drawable && !self.surface_state.can_acquire() {
+            adapter.quarantine_active_pointers();
+            let canceled = runtime.cancel_pointer_captures(adapter.logical_pointer_position());
+            effects.merge(self.fold_effects(canceled));
+        }
+        self.surface_state.reset_recovery_budget();
+        if changed && self.surface_state.can_acquire() {
+            effects.merge(self.scheduler.schedule(runtime.update(Instant::now())));
+            effects.merge(self.request_frame());
+        }
+        crate::winit::WinitEventOutcome::handled(effects)
+    }
     /// Executes one complete integration frame after the runtime update and
     /// before GPU encoding. Hosts use this to register frame-local resources
     /// produced during the update without owning presentation policy.
-    pub fn render_with_prepare<'frame, 'surface>(
+    pub(crate) fn render_with_prepare<'frame>(
         &mut self,
         runtime: &mut Runtime,
-        mut target: WinitFrameTarget<'frame, 'surface>,
+        mut target: WinitFrameTarget<'frame>,
         prepare: impl FnOnce(&mut Runtime),
     ) -> FrameOutcome {
         let effects = self.redraw_requested(runtime, Instant::now());
@@ -72,7 +215,7 @@ impl WinitAdapter {
             FrameAcquisition::Presented(output) => {
                 let outcome = self.finish_presentable(effects, output, false, present);
                 if outcome.is_presented() {
-                    self.surface_state.reset_after_success();
+                    self.surface_state.reset_recovery_budget();
                 }
                 outcome
             }
@@ -179,7 +322,7 @@ pub(super) fn execute_presented_frame<T, V, C, E>(
 
 pub(super) fn execute_wgpu_frame(
     runtime: &mut Runtime,
-    target: &WinitFrameTarget<'_, '_>,
+    target: &WinitFrameTarget<'_>,
     output: wgpu::SurfaceTexture,
     commit: bool,
 ) -> Result<(), FrameError> {
@@ -222,7 +365,12 @@ pub(super) fn execute_wgpu_frame(
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                runtime.encode(target.queue(), &mut pass, viewport, commit);
+                runtime.encode(
+                    ExternalDrawGpu::new(target.device(), target.queue(), target.format()),
+                    &mut pass,
+                    viewport,
+                    commit,
+                );
             }
             Ok(encoder.finish())
         },
@@ -269,74 +417,58 @@ pub(super) fn frame_clear_color(
 
 /// Borrowed host resources valid for one frame.
 ///
-/// The separate `surface` lifetime describes the lifetime carried by the wgpu
-/// surface itself, while `frame` describes the borrow of that surface and the
-/// other host resources. Configuration mutation is framed as a Host-owned
-/// callback so encode can share the same GpuContext via the temporary
-/// CustomPaint GPU scope without aliasing a mutable configuration borrow.
-/// This value is consumed by a frame call and cannot be retained by either
-/// the runtime or adapter.
-pub struct WinitFrameTarget<'frame, 'surface> {
+/// This internal target borrows widget-owned shared GPU resources and one mutable window
+/// surface. It is consumed by an internal frame call and cannot be retained by the runtime or adapter.
+pub(crate) struct WinitFrameTarget<'frame> {
     window: &'frame Window,
-    surface: &'frame wgpu::Surface<'surface>,
-    device: &'frame wgpu::Device,
-    queue: &'frame wgpu::Queue,
-    configure: &'frame mut dyn FnMut(u32, u32),
-    backdrop_available: bool,
-    alpha_mode: wgpu::CompositeAlphaMode,
+    gpu: &'frame SharedGpu,
+    surface: &'frame mut WindowSurface,
 }
 
-impl<'frame, 'surface> WinitFrameTarget<'frame, 'surface> {
-    pub fn new(
+impl<'frame> WinitFrameTarget<'frame> {
+    pub(crate) fn new(
         window: &'frame Window,
-        surface: &'frame wgpu::Surface<'surface>,
-        device: &'frame wgpu::Device,
-        queue: &'frame wgpu::Queue,
-        configure: &'frame mut dyn FnMut(u32, u32),
-        backdrop_available: bool,
-        alpha_mode: wgpu::CompositeAlphaMode,
+        gpu: &'frame SharedGpu,
+        surface: &'frame mut WindowSurface,
     ) -> Self {
         Self {
             window,
+            gpu,
             surface,
-            device,
-            queue,
-            configure,
-            backdrop_available,
-            alpha_mode,
         }
     }
 
-    pub fn reconfigure(&mut self, viewport: &Viewport) {
+    pub(crate) fn reconfigure(&mut self, viewport: &Viewport) {
         assert!(
             viewport.is_drawable(),
             "refusing zero-sized surface configure"
         );
-        (self.configure)(viewport.physical_size.0, viewport.physical_size.1);
+        self.surface
+            .configure_size(self.gpu, viewport.physical_size.0, viewport.physical_size.1);
     }
 
-    pub fn window(&self) -> &'frame Window {
+    pub(crate) fn window(&self) -> &'frame Window {
         self.window
     }
 
-    pub fn surface(&self) -> &'frame wgpu::Surface<'surface> {
-        self.surface
+    pub(crate) fn surface(&self) -> &wgpu::Surface<'static> {
+        self.surface.surface()
     }
 
-    pub fn device(&self) -> &'frame wgpu::Device {
-        self.device
+    pub(crate) fn device(&self) -> &'frame wgpu::Device {
+        self.gpu.device()
     }
 
-    pub fn queue(&self) -> &'frame wgpu::Queue {
-        self.queue
+    pub(crate) fn queue(&self) -> &'frame wgpu::Queue {
+        self.gpu.queue()
     }
 
-    pub const fn backdrop_available(&self) -> bool {
-        self.backdrop_available
+    pub(crate) fn format(&self) -> wgpu::TextureFormat {
+        self.surface.format()
     }
 
-    pub const fn alpha_mode(&self) -> wgpu::CompositeAlphaMode {
-        self.alpha_mode
+    pub(crate) fn alpha_mode(&self) -> wgpu::CompositeAlphaMode {
+        self.surface.alpha_mode()
     }
 }
 

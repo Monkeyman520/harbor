@@ -92,19 +92,19 @@ impl BuildCx {
     /// Registers an external draw handler for the current build.
     pub fn register_external_draw(
         &mut self,
-        id: ExternalDrawId,
+        id: impl Into<ExternalDrawId>,
         handler: Arc<ExternalDrawFn<'static>>,
     ) {
-        self.externals.draws.push((id, handler));
+        self.externals.draws.push((id.into(), handler));
     }
 
     /// Registers an external schedule provider for the current build.
     pub fn register_external_schedule(
         &mut self,
-        id: ExternalDrawId,
+        id: impl Into<ExternalDrawId>,
         schedule: Arc<ExternalScheduleFn>,
     ) {
-        self.externals.schedules.push((id, schedule));
+        self.externals.schedules.push((id.into(), schedule));
     }
 
     /// Returns a Signal for state of type `T`.
@@ -212,7 +212,6 @@ pub(crate) enum EnsureVisibleResult {
 ///
 /// Each concrete widget type provides an AnyView implementation that stores
 /// configuration and can be used for layout and rebuild.
-#[allow(dead_code)]
 pub(crate) trait AnyView: 'static {
     /// Optional key for list reconciliation.
     fn key(&self) -> Option<&Key> {

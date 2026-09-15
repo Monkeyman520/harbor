@@ -16,7 +16,7 @@ use crate::{
 };
 
 #[path = "ui.rs"]
-pub(crate) mod ui;
+pub mod ui;
 
 pub(crate) const EXPANDED_BREAKPOINT_DP: f32 = 900.0;
 const EXPANDED_RAIL_WIDTH: f32 = 200.0;
@@ -48,7 +48,7 @@ impl RailPresentation {
 
 /// Requests are queued during widget event routing and reduced by the Host afterward.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TabCommand {
+pub enum TabCommand {
     New,
     Close(TabId),
     CloseActive,
@@ -60,16 +60,16 @@ pub(crate) enum TabCommand {
 
 /// Focus disposition attached at the event source.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TabFocusPolicy {
+pub enum TabFocusPolicy {
     PreserveRail,
     RailTab(TabId),
     Terminal,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct TabCommandRequest {
-    pub(crate) command: TabCommand,
-    pub(crate) focus: TabFocusPolicy,
+pub struct TabCommandRequest {
+    pub command: TabCommand,
+    pub focus: TabFocusPolicy,
 }
 
 impl TabCommandRequest {
@@ -124,7 +124,7 @@ impl TerminalAllocationMailbox {
 
 /// Stable boundary between the Host-owned tab model and the declarative widget tree.
 #[derive(Clone)]
-pub(crate) struct TabUiController {
+pub struct TabUiController {
     store: Store<TabUiState, TabCommandRequest>,
     tab_focus: Arc<Mutex<HashMap<TabId, FocusHandle>>>,
     scroll: ScrollController,
@@ -133,7 +133,7 @@ pub(crate) struct TabUiController {
 }
 
 impl TabUiController {
-    pub(crate) fn new(
+    pub fn new(
         snapshots: Vec<TabSnapshot>,
         active_bridge: TerminalWidgetBridge,
         logical_width: f64,
@@ -155,7 +155,7 @@ impl TabUiController {
         }
     }
 
-    pub(crate) fn sync(
+    pub fn sync(
         &self,
         snapshots: Vec<TabSnapshot>,
         active_bridge: Option<TerminalWidgetBridge>,
@@ -174,7 +174,7 @@ impl TabUiController {
         });
     }
 
-    pub(crate) fn update_presentation(&self, logical_width: f64) -> bool {
+    pub fn update_presentation(&self, logical_width: f64) -> bool {
         let current = self.store.state().read().clone();
         let presentation = RailPresentation::for_logical_width(logical_width);
         if current.presentation == presentation {
@@ -187,19 +187,19 @@ impl TabUiController {
         true
     }
 
-    pub(crate) fn drain_actions(&self) -> Vec<TabCommandRequest> {
+    pub fn drain_actions(&self) -> Vec<TabCommandRequest> {
         self.store.drain_actions()
     }
 
-    pub(crate) fn terminal_focus(&self) -> FocusHandle {
+    pub fn terminal_focus(&self) -> FocusHandle {
         self.terminal_focus
     }
 
-    pub(crate) fn latest_terminal_allocation(&self) -> Option<Rect> {
+    pub fn latest_terminal_allocation(&self) -> Option<Rect> {
         self.allocation.latest()
     }
 
-    pub(crate) fn tab_focus(&self, id: TabId) -> Option<FocusHandle> {
+    pub fn tab_focus(&self, id: TabId) -> Option<FocusHandle> {
         self.tab_focus.lock().ok()?.get(&id).copied()
     }
 }
@@ -218,7 +218,7 @@ mod tests {
         layout::Point,
         renderer::Viewport,
         runtime::Runtime,
-        scene::primitive::Primitive,
+        scene::primitive::{ExternalDrawId, Primitive},
     };
     use std::{any::TypeId, sync::atomic::AtomicBool, time::Instant};
 
@@ -227,7 +227,7 @@ mod tests {
             id: TabId(id),
             title: format!("Terminal {id}"),
             unread,
-            draw_id: id,
+            draw_id: ExternalDrawId::new(id),
             active,
         }
     }
@@ -235,7 +235,7 @@ mod tests {
     #[allow(clippy::arc_with_non_send_sync)]
     fn bridge(draw_id: u64) -> TerminalWidgetBridge {
         TerminalWidgetBridge::new(
-            draw_id,
+            ExternalDrawId::new(draw_id),
             Arc::new(Mutex::new(Terminal::new_headless(4, 20))),
             Arc::new(AtomicBool::new(false)),
         )
@@ -364,7 +364,7 @@ mod tests {
             .added
             .iter()
             .find_map(|item| match item.primitive {
-                Primitive::External { rect, draw: 1 } => Some(rect),
+                Primitive::External { rect, draw } if draw == 1 => Some(rect),
                 _ => None,
             })
             .unwrap();
@@ -407,7 +407,7 @@ mod tests {
                 .added
                 .iter()
                 .find_map(|item| match item.primitive {
-                    Primitive::External { rect, draw: 1 } => Some(rect),
+                    Primitive::External { rect, draw } if draw == 1 => Some(rect),
                     _ => None,
                 })
                 .expect("active terminal primitive");

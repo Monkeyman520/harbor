@@ -5,10 +5,13 @@ use harbor_widget::input::event::{
     KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase, UiEvent,
 };
 use harbor_widget::runtime::Runtime;
+use harbor_widget::scene::primitive::ExternalDrawId;
 use harbor_widget::widgets::button::Button;
 use harbor_widget::widgets::custom_paint::CustomPaint;
 use harbor_widget::winit::{
-    FrameError, FrameOutcome, WinitAdapter, WinitEventOutcome, WinitFrameTarget,
+    FrameError, FrameOutcome, HostEventOutcome, HostFrameOutcome, HostIdleOutcome, HostInitContext,
+    HostStartupError, SharedGpu, WindowPlatformHooks, WindowSurfaceInfo, WinitAdapter,
+    WinitEventOutcome, WinitWindowHost, WinitWindowHostBuilder,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -20,39 +23,48 @@ use winit::event::{
 use winit::keyboard::{Key, KeyLocation, ModifiersState};
 use winit::window::Window;
 
-// This fixture is type-checked without constructing an OS window or GPU
-// surface. In particular, the target owns no host resources.
-fn borrowed_frame_contract<'frame, 'surface>(
-    window: &'frame Window,
-    surface: &'frame wgpu::Surface<'surface>,
-    device: &'frame wgpu::Device,
-    queue: &'frame wgpu::Queue,
-    configure: &'frame mut dyn FnMut(u32, u32),
-    event: &WindowEvent,
-) {
-    let target = WinitFrameTarget::new(
-        window,
-        surface,
-        device,
-        queue,
-        configure,
-        false,
-        wgpu::CompositeAlphaMode::Opaque,
-    );
-    let _ = target.window();
-    let _ = target.surface();
-    let _ = target.device();
-    let _ = target.queue();
-    assert!(!target.backdrop_available());
-    assert_eq!(target.alpha_mode(), wgpu::CompositeAlphaMode::Opaque);
+#[test]
+fn widget_manifest_does_not_depend_on_terminal_or_application_crates() {
+    let manifest = include_str!("../Cargo.toml");
+    for forbidden in ["harbor-terminal", "harbor-app"] {
+        assert!(
+            !manifest
+                .lines()
+                .any(|line| line.trim().starts_with(forbidden)),
+            "widget manifest must not depend on {forbidden}"
+        );
+    }
+}
 
-    let mut runtime = Runtime::new();
-    let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
-    let outcome: WinitEventOutcome = adapter.handle_event(&mut runtime, event);
-    assert!(outcome.handled);
-    assert!(outcome.effects.is_noop());
-    let outcome = adapter.render(&mut runtime, target);
-    assert!(outcome.effects().is_noop());
+#[cfg(feature = "hmr")]
+#[test]
+fn hmr_contract_is_widget_owned_and_work_is_sendable() {
+    fn assert_send<T: Send>() {}
+    assert_send::<harbor_widget::winit::WidgetHmrWork>();
+
+    let manifest = include_str!("../Cargo.toml");
+    assert!(manifest.contains("hmr = [\"winit\", \"dep:hot-lib-reloader\"]"));
+}
+
+#[cfg(feature = "hmr")]
+#[allow(dead_code)]
+fn attach_hmr_config<P, F>(
+    builder: WinitWindowHostBuilder<P, F>,
+    config: harbor_widget::winit::WidgetHmrConfig,
+) -> WinitWindowHostBuilder<P, F> {
+    builder.with_hmr(config)
+}
+#[test]
+fn native_host_public_api_encapsulates_frame_target_and_surface() {
+    let winit_mod = include_str!("../src/winit/mod.rs");
+    for internal_only in ["WinitFrameTarget", "WindowSurface"] {
+        assert!(
+            !winit_mod
+                .lines()
+                .any(|line| line.trim().starts_with("pub use") && line.contains(internal_only)),
+            "public winit contract must not expose {internal_only}"
+        );
+    }
 }
 
 #[test]
@@ -167,9 +179,90 @@ fn frame_error_categories_are_host_inspectable() {
     );
 }
 
+struct ContractHooks;
+
+impl WindowPlatformHooks for ContractHooks {
+    type Setup = u32;
+
+    fn window_created(&self, _window: &Window) -> anyhow::Result<Self::Setup> {
+        Ok(7)
+    }
+
+    fn surface_ready(
+        &self,
+        _window: &Window,
+        setup: &mut Self::Setup,
+        surface: WindowSurfaceInfo,
+    ) -> anyhow::Result<bool> {
+        assert_ne!(surface.physical_size, (0, 0));
+        *setup += 1;
+        Ok(true)
+    }
+}
+
 #[allow(dead_code)]
-fn compile_only_borrowed_frame_contract() {
-    let _ = borrowed_frame_contract;
+async fn owned_host_contract(
+    event_loop: &winit::event_loop::ActiveEventLoop,
+    shared_gpu: Arc<SharedGpu>,
+) -> Result<(), HostStartupError> {
+    let (first, application_output): (WinitWindowHost, u32) = WinitWindowHostBuilder::new(
+        Window::default_attributes().with_visible(false),
+        |context: HostInitContext<'_>, setup: &u32| {
+            let _ = context.window().id();
+            let _ = context.gpu().device();
+            let _ = context.shared_gpu();
+            let _ = context.surface();
+            assert!(context.backdrop_available());
+            assert!(context.text_metrics().cell_width > 0.0);
+            assert!(context.text_metrics().line_height > 0.0);
+            assert_eq!(*setup, 8);
+            Ok::<_, anyhow::Error>((
+                harbor_widget::widgets::sized_box::SizedBox::new(harbor_widget::layout::Size::new(
+                    16.0, 16.0,
+                )),
+                42,
+            ))
+        },
+    )
+    .with_platform_hooks(ContractHooks)
+    .build_with_output(event_loop)
+    .await?;
+    assert_eq!(application_output, 42);
+
+    let mut second: WinitWindowHost = WinitWindowHostBuilder::new(
+        Window::default_attributes().with_visible(false),
+        |_context: HostInitContext<'_>, _setup: &()| {
+            Ok::<_, anyhow::Error>(harbor_widget::widgets::sized_box::SizedBox::new(
+                harbor_widget::layout::Size::new(8.0, 8.0),
+            ))
+        },
+    )
+    .reuse_gpu(shared_gpu)
+    .focus_first(true)
+    .build(event_loop)
+    .await?;
+
+    let _ = first.window();
+    let _ = first.window_id();
+    let _ = first.gpu();
+    let _ = first.shared_gpu();
+    let _ = first.viewport();
+    let _ = first.modifiers();
+    let _ = first.backdrop_available();
+    let _: HostIdleOutcome = second.request_frame();
+    let _: HostFrameOutcome = second.present_now();
+    let focus = harbor_widget::widgets::FocusHandle::new();
+    let _: HostIdleOutcome = second.request_focus(&focus);
+    let _: HostIdleOutcome = second.clear_focus();
+    let _: HostIdleOutcome = second.cancel_active_input_ownership();
+    second.quarantine_blocked_pointer_event(&WindowEvent::Focused(true));
+    let _: HostIdleOutcome =
+        second.invalidate_external(harbor_widget::effects::ExternalInvalidation::new());
+    let _: HostIdleOutcome = second.about_to_wait(Instant::now(), None);
+    let event = WindowEvent::Focused(true);
+    let event_outcome: HostEventOutcome = second.handle_window_event(&event);
+    let _: Option<HostFrameOutcome> = event_outcome.frame;
+    Ok(())
 }
 
 fn custom_paint_runtime(draw_id: u64) -> Runtime {
@@ -237,7 +330,7 @@ fn adapter_dispatches_pointer_events_with_scaled_position_and_latest_cursor_stat
         events,
         vec![
             (
-                11,
+                ExternalDrawId::new(11),
                 UiEvent::Pointer(PointerEvent::new(
                     harbor_widget::layout::Point::new(40.0, 20.0),
                     PointerPhase::Move,
@@ -246,7 +339,7 @@ fn adapter_dispatches_pointer_events_with_scaled_position_and_latest_cursor_stat
                 ))
             ),
             (
-                11,
+                ExternalDrawId::new(11),
                 UiEvent::Pointer(PointerEvent::new(
                     harbor_widget::layout::Point::new(40.0, 20.0),
                     PointerPhase::Down,
@@ -255,7 +348,7 @@ fn adapter_dispatches_pointer_events_with_scaled_position_and_latest_cursor_stat
                 ))
             ),
             (
-                11,
+                ExternalDrawId::new(11),
                 UiEvent::Pointer(PointerEvent::new(
                     harbor_widget::layout::Point::new(40.0, 20.0),
                     PointerPhase::WheelPixel { dx: 1.5, dy: -2.0 },
@@ -291,7 +384,7 @@ fn adapter_keeps_valid_scale_and_pointer_state_when_invalid_scale_is_offered() {
     assert_eq!(
         events,
         vec![(
-            12,
+            ExternalDrawId::new(12),
             UiEvent::Pointer(PointerEvent::new(
                 harbor_widget::layout::Point::new(10.0, 5.0),
                 PointerPhase::Move,
@@ -338,7 +431,10 @@ fn adapter_deduplicates_ime_composition_and_forwards_only_nonempty_commit() {
     // Assert: composition text is delivered once, and empty commits are ignored.
     assert_eq!(
         runtime.drain_external_input(),
-        vec![(13, UiEvent::Keyboard(KeyboardEvent::Ime("語".into())),)]
+        vec![(
+            ExternalDrawId::new(13),
+            UiEvent::Keyboard(KeyboardEvent::Ime("語".into())),
+        )]
     );
 }
 
@@ -346,7 +442,7 @@ fn adapter_deduplicates_ime_composition_and_forwards_only_nonempty_commit() {
 fn adapter_modifier_state_is_per_window_and_does_not_leak_between_runtimes() {
     // Arrange
     let mut first_runtime = custom_paint_runtime(14);
-    let second_runtime = custom_paint_runtime(15);
+    let mut second_runtime = custom_paint_runtime(15);
     let mut first_adapter = WinitAdapter::new();
     let second_adapter = WinitAdapter::new();
 
@@ -381,7 +477,10 @@ fn main_and_confirmation_adapters_route_only_events_offered_to_each_window() {
     main_adapter.handle_event(&mut main_runtime, &main_event);
     assert_eq!(
         main_runtime.drain_external_input(),
-        vec![(16, UiEvent::Keyboard(KeyboardEvent::Ime("main".into())),)]
+        vec![(
+            ExternalDrawId::new(16),
+            UiEvent::Keyboard(KeyboardEvent::Ime("main".into())),
+        )]
     );
     assert!(confirmation_runtime.drain_external_input().is_empty());
 
@@ -389,7 +488,7 @@ fn main_and_confirmation_adapters_route_only_events_offered_to_each_window() {
     assert_eq!(
         confirmation_runtime.drain_external_input(),
         vec![(
-            17,
+            ExternalDrawId::new(17),
             UiEvent::Pointer(PointerEvent::new(
                 harbor_widget::layout::Point::new(4.0, 6.0),
                 PointerPhase::Move,
@@ -418,7 +517,7 @@ fn adapter_dispatch_reaches_runtime_custom_paint_with_public_event_outcome() {
     assert_eq!(
         runtime.drain_external_input(),
         vec![(
-            18,
+            ExternalDrawId::new(18),
             UiEvent::Keyboard(KeyboardEvent::Ime("terminal input".into())),
         )]
     );
@@ -446,7 +545,7 @@ fn ime_enabled_without_preedit_does_not_suppress_character_keydown() {
     assert_eq!(
         runtime.drain_external_input(),
         vec![(
-            19,
+            ExternalDrawId::new(19),
             UiEvent::Keyboard(KeyboardEvent::KeyDown {
                 key: harbor_widget::input::event::Key::Character('a'),
                 modifiers: Default::default(),
@@ -499,7 +598,7 @@ fn disabled_ime_restores_character_key_dispatch_from_active_preedit() {
     assert_eq!(
         runtime.drain_external_input(),
         vec![(
-            20,
+            ExternalDrawId::new(20),
             UiEvent::Keyboard(KeyboardEvent::KeyDown {
                 key: harbor_widget::input::event::Key::Character('a'),
                 modifiers: Default::default(),
@@ -533,7 +632,7 @@ fn disabled_ime_restores_character_key_dispatch_and_empty_commit_is_a_handled_no
     assert_eq!(
         runtime.drain_external_input(),
         vec![(
-            20,
+            ExternalDrawId::new(20),
             UiEvent::Keyboard(KeyboardEvent::KeyDown {
                 key: harbor_widget::input::event::Key::Character('a'),
                 modifiers: Default::default(),
@@ -575,7 +674,7 @@ fn modifier_changes_are_applied_to_dispatched_keyboard_events() {
     assert_eq!(
         runtime.drain_external_input(),
         vec![(
-            26,
+            ExternalDrawId::new(26),
             UiEvent::Keyboard(KeyboardEvent::KeyDown {
                 key: harbor_widget::input::event::Key::Character('x'),
                 modifiers: Modifiers {
@@ -702,7 +801,7 @@ fn ime_suppresses_only_character_keydown_during_preedit_and_keeps_keyup_handled(
     assert_eq!(
         runtime.drain_external_input(),
         vec![(
-            22,
+            ExternalDrawId::new(22),
             UiEvent::Keyboard(KeyboardEvent::KeyUp {
                 key: harbor_widget::input::event::Key::Character('a'),
                 modifiers: Default::default(),
@@ -724,7 +823,7 @@ fn adapter_routes_focus_loss_to_custom_paint() {
     assert_eq!(
         runtime.drain_external_input(),
         vec![(
-            25,
+            ExternalDrawId::new(25),
             UiEvent::Focus(harbor_widget::input::event::FocusEvent::Lost),
         )]
     );

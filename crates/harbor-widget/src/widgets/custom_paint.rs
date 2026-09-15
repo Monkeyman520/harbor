@@ -20,7 +20,7 @@ pub type ExternalInputFn = dyn Fn(&UiEvent, &mut EventCtx) -> EventHandled;
 /// queues input for deferred delivery after the event walk completes.
 #[derive(Clone)]
 pub struct CustomPaint {
-    pub draw_id: ExternalDrawId,
+    draw_id: ExternalDrawId,
     handler: Option<Arc<ExternalDrawFn<'static>>>,
     schedule: Option<Arc<ExternalScheduleFn>>,
     on_input: Option<Arc<ExternalInputFn>>,
@@ -28,14 +28,19 @@ pub struct CustomPaint {
 }
 
 impl CustomPaint {
-    pub fn new(draw_id: ExternalDrawId) -> Self {
+    pub fn new(draw_id: impl Into<ExternalDrawId>) -> Self {
         CustomPaint {
-            draw_id,
+            draw_id: draw_id.into(),
             handler: None,
             schedule: None,
             on_input: None,
             children: vec![],
         }
+    }
+
+    /// Returns the stable identifier used by this external paint widget.
+    pub const fn draw_id(&self) -> ExternalDrawId {
+        self.draw_id
     }
 
     /// Sets the renderer invoked for this widget's external primitive.
@@ -235,7 +240,7 @@ mod tests {
             assert_eq!(child.layout_rect().unwrap().size(), expected);
             assert!(
                 matches!(runtime.pending_delta().unwrap().added[0].primitive,
-                Primitive::External { rect, draw: 1 } if rect.size() == expected)
+                Primitive::External { rect, draw } if draw == 1 && rect.size() == expected)
             );
             let natural = CustomPaint::new(1).intrinsic_size(constraints, &DEFAULT_TEXT_METRICS);
             assert_eq!(
@@ -264,7 +269,7 @@ mod tests {
         );
         assert!(
             matches!(runtime.pending_delta().unwrap().added[0].primitive,
-            Primitive::External { rect, draw: 1 } if rect.size() == Size::new(7.0, 11.0))
+            Primitive::External { rect, draw } if draw == 1 && rect.size() == Size::new(7.0, 11.0))
         );
     }
 
@@ -283,7 +288,7 @@ mod tests {
         assert_eq!(root.layout_rect().unwrap().size(), Size::new(33.0, 21.0));
         assert!(
             matches!(runtime.pending_delta().unwrap().added[0].primitive,
-            Primitive::External { rect, draw: 1 } if rect.size() == Size::new(33.0, 21.0))
+            Primitive::External { rect, draw } if draw == 1 && rect.size() == Size::new(33.0, 21.0))
         );
     }
 
@@ -320,7 +325,7 @@ mod tests {
     #[test]
     fn should_register_handler_when_custom_paint_is_built_with_one() {
         // Arrange: a CustomPaint with a stable handler and real build context.
-        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _| {});
+        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
         let custom_paint = CustomPaint::new(42).handler(Arc::clone(&handler));
         let mut cx = BuildCx::stub();
 
@@ -372,7 +377,7 @@ mod tests {
         use crate::scene::primitive::ExternalScheduleDemand;
 
         // Arrange
-        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _| {});
+        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
         let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand::empty());
         let custom_paint = CustomPaint::new(11)
             .handler(Arc::clone(&handler))
