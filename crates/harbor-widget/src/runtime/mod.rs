@@ -139,6 +139,7 @@ impl Runtime {
         let old_layout_notifications = std::mem::take(&mut self.pending_layout_notifications);
         let old_events = std::mem::replace(&mut self.events, EventRouter::new());
         remove_runtime(self.runtime_id);
+        self.encoder.release_text_owner(self.runtime_id);
 
         let removal = self.scene_graph.diff(Vec::new());
         if let Some(pending_delta) = &mut self.pending_delta {
@@ -641,8 +642,17 @@ impl Runtime {
     ///
     /// Call after Runtime update/paint and before encoding the frame.
     pub fn prepare_text(&mut self, queue: &wgpu::Queue) {
-        self.encoder
-            .prepare_text(&self.scene_graph, &self.text_metrics, queue);
+        let raster_scale = self
+            .current_viewport
+            .as_ref()
+            .map_or(1.0, |viewport| viewport.scale_factor);
+        self.encoder.prepare_text(
+            &self.scene_graph,
+            &self.text_metrics,
+            self.runtime_id,
+            raster_scale,
+            queue,
+        );
     }
 
     #[cfg(test)]
@@ -708,10 +718,13 @@ impl Runtime {
         }
     }
 
+    /// Returns the number of retained cached text runs.
+    pub fn cached_text_run_count(&self) -> usize {
+        self.encoder.cached_text_run_count()
+    }
+
     #[cfg(test)]
-    /// Returns a mutable reference to the TextRunCache.
-    /// The host uses this to look up glyph data for text rendering.
-    pub fn text_run_cache(&mut self) -> &mut TextRunCache {
+    pub(crate) fn text_run_cache(&mut self) -> &mut TextRunCache {
         self.encoder.text_run_cache()
     }
 
@@ -794,12 +807,7 @@ impl Runtime {
 }
 
 fn valid_layout_notification_rect(rect: Rect) -> bool {
-    rect.min.x.is_finite()
-        && rect.min.y.is_finite()
-        && rect.max.x.is_finite()
-        && rect.max.y.is_finite()
-        && rect.max.x > rect.min.x
-        && rect.max.y > rect.min.y
+    rect.is_valid()
 }
 
 impl Drop for Runtime {
@@ -2054,6 +2062,7 @@ mod tests {
                 height: 16,
                 bearing_x: 0,
                 bearing_y: 12,
+                advance_width: 8.0,
                 atlas_x: 0,
                 atlas_y: 0,
             })
@@ -2088,6 +2097,11 @@ mod tests {
         rt.encoder
             .prepare_text_runs(&rt.scene_graph, &rt.text_metrics, 1, &glyph);
         assert!(!rt.encoder.text_instances_dirty());
+
+        rt.encoder
+            .prepare_text_runs_at_scale(&rt.scene_graph, &rt.text_metrics, 1, 2.0, &glyph);
+        assert!(rt.encoder.text_instances_dirty());
+        rt.encoder.mark_text_instances_uploaded();
 
         rt.encoder
             .prepare_text_runs(&rt.scene_graph, &rt.text_metrics, 2, &glyph);

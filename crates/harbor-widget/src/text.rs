@@ -34,12 +34,15 @@ pub struct GlyphLayout {
 #[derive(Clone, Debug)]
 pub struct TextRunData {
     pub glyphs: Vec<GlyphLayout>,
+    /// Total logical horizontal advance of the run, including metric-only glyphs.
+    pub advance_width: f32,
 }
 
 #[derive(Clone)]
 struct CachedTextRun {
     text: String,
     metrics: TextMetrics,
+    raster_scale: f32,
     data: TextRunData,
 }
 
@@ -78,12 +81,25 @@ impl TextRunCache {
         metrics: &TextMetrics,
         glyph_fn: &GlyphFn<'_>,
     ) -> bool {
+        self.upsert_at_scale(id, text, metrics, 1.0, glyph_fn)
+    }
+
+    /// Inserts or updates a run using glyph bitmaps rasterized at `raster_scale`.
+    pub fn upsert_at_scale(
+        &mut self,
+        id: impl Into<TextRunId>,
+        text: &str,
+        metrics: &TextMetrics,
+        raster_scale: f32,
+        glyph_fn: &GlyphFn<'_>,
+    ) -> bool {
         let id = id.into();
-        if self
-            .runs
-            .get(&id)
-            .is_some_and(|run| run.text == text && text_metrics_equal(&run.metrics, metrics))
-        {
+        let raster_scale = normalize_raster_scale(raster_scale);
+        if self.runs.get(&id).is_some_and(|run| {
+            run.text == text
+                && text_metrics_equal(&run.metrics, metrics)
+                && run.raster_scale.to_bits() == raster_scale.to_bits()
+        }) {
             return false;
         }
 
@@ -92,7 +108,8 @@ impl TextRunCache {
             CachedTextRun {
                 text: text.to_owned(),
                 metrics: *metrics,
-                data: Self::layout_run(text, metrics, glyph_fn),
+                raster_scale,
+                data: Self::layout_run(text, metrics, raster_scale, glyph_fn),
             },
         );
         true
@@ -132,32 +149,52 @@ impl TextRunCache {
         self.runs.is_empty()
     }
 
-    fn layout_run(text: &str, metrics: &TextMetrics, glyph_fn: &GlyphFn<'_>) -> TextRunData {
+    fn layout_run(
+        text: &str,
+        metrics: &TextMetrics,
+        raster_scale: f32,
+        glyph_fn: &GlyphFn<'_>,
+    ) -> TextRunData {
         let mut glyphs = Vec::with_capacity(text.len());
         let mut pen_x = 0.0;
 
         for ch in text.chars() {
-            if let Some(g) = glyph_fn(ch)
-                && g.width > 0
-                && g.height > 0
-            {
-                glyphs.push(GlyphLayout {
-                    origin: Point::new(
-                        pen_x + g.bearing_x as f32,
-                        metrics.ascent - g.bearing_y as f32 - g.height as f32,
-                    ),
-                    width: g.width as f32,
-                    height: g.height as f32,
-                    uv_left: g.uv.left,
-                    uv_top: g.uv.top,
-                    uv_right: g.uv.right,
-                    uv_bottom: g.uv.bottom,
-                });
+            match glyph_fn(ch) {
+                Some(g) => {
+                    if g.width > 0 && g.height > 0 {
+                        let width = g.width as f32 / raster_scale;
+                        let height = g.height as f32 / raster_scale;
+                        glyphs.push(GlyphLayout {
+                            origin: Point::new(
+                                pen_x + g.bearing_x as f32 / raster_scale,
+                                metrics.ascent - g.bearing_y as f32 / raster_scale - height,
+                            ),
+                            width,
+                            height,
+                            uv_left: g.uv.left,
+                            uv_top: g.uv.top,
+                            uv_right: g.uv.right,
+                            uv_bottom: g.uv.bottom,
+                        });
+                    }
+                    pen_x += g.advance_width / raster_scale;
+                }
+                None => pen_x += metrics.cell_width,
             }
-            pen_x += metrics.cell_width;
         }
 
-        TextRunData { glyphs }
+        TextRunData {
+            glyphs,
+            advance_width: pen_x,
+        }
+    }
+}
+
+pub(crate) fn normalize_raster_scale(scale: f32) -> f32 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
     }
 }
 
@@ -207,13 +244,10 @@ mod tests {
             height: 16,
             bearing_x: 0,
             bearing_y: 0,
+            advance_width: 10.0,
             atlas_x: 0,
             atlas_y: 0,
         })
-    }
-
-    fn empty_glyph_fn(_ch: char) -> Option<AtlasGlyph> {
-        None
     }
 
     #[test]
@@ -221,6 +255,7 @@ mod tests {
         let mut cache = TextRunCache::new();
         cache.upsert(1, "", &test_metrics(), &test_glyph_fn);
         let run = cache.get(1).unwrap();
+        assert_eq!(run.advance_width, 0.0);
         assert!(run.glyphs.is_empty());
     }
 
@@ -233,21 +268,36 @@ mod tests {
     }
 
     #[test]
-    fn multi_char_advances_pen() {
+    fn multi_char_uses_each_resolved_glyph_advance() {
+        let glyphs = |ch| {
+            test_glyph_fn(ch).map(|mut glyph| {
+                glyph.advance_width = match ch {
+                    'A' => 4.0,
+                    'B' => 9.0,
+                    'C' => 6.0,
+                    _ => unreachable!(),
+                };
+                glyph
+            })
+        };
         let mut cache = TextRunCache::new();
-        cache.upsert(1, "ABC", &test_metrics(), &test_glyph_fn);
+        cache.upsert(1, "ABC", &test_metrics(), &glyphs);
         let run = cache.get(1).unwrap();
         assert_eq!(run.glyphs.len(), 3);
-        assert!((run.glyphs[1].origin.x - 10.0).abs() < 0.01);
-        assert!((run.glyphs[2].origin.x - 20.0).abs() < 0.01);
+        assert!((run.glyphs[1].origin.x - 4.0).abs() < 0.01);
+        assert!((run.glyphs[2].origin.x - 13.0).abs() < 0.01);
+        assert!((run.advance_width - 19.0).abs() < 0.01);
     }
 
     #[test]
-    fn missing_glyph_skips_but_advances() {
+    fn missing_glyph_uses_cell_width_fallback_advance() {
+        let glyphs = |ch| (ch == 'B').then(|| test_glyph_fn(ch).unwrap());
         let mut cache = TextRunCache::new();
-        cache.upsert(1, "A", &test_metrics(), &empty_glyph_fn);
+        cache.upsert(1, "AB", &test_metrics(), &glyphs);
         let run = cache.get(1).unwrap();
-        assert!(run.glyphs.is_empty());
+        assert_eq!(run.glyphs.len(), 1);
+        assert!((run.glyphs[0].origin.x - 10.0).abs() < 0.01);
+        assert!((run.advance_width - 20.0).abs() < 0.01);
     }
 
     #[test]
@@ -311,8 +361,8 @@ mod tests {
     }
 
     #[test]
-    fn zero_width_glyph_is_skipped() {
-        let fn_zero_width = |_ch: char| -> Option<AtlasGlyph> {
+    fn metric_only_glyph_advances_without_emitting_a_quad() {
+        let metric_only = |_ch: char| -> Option<AtlasGlyph> {
             Some(AtlasGlyph {
                 key: harbor_text::GlyphKey::new(
                     harbor_text::FaceId::PRIMARY,
@@ -327,7 +377,8 @@ mod tests {
                     bottom: 1.0,
                 },
                 width: 0,
-                height: 16,
+                height: 0,
+                advance_width: 5.0,
                 bearing_x: 1,
                 bearing_y: 2,
                 atlas_x: 0,
@@ -335,8 +386,49 @@ mod tests {
             })
         };
         let mut cache = TextRunCache::new();
-        cache.upsert(1, "X", &test_metrics(), &fn_zero_width);
+        cache.upsert(1, "  ", &test_metrics(), &metric_only);
         let run = cache.get(1).unwrap();
         assert!(run.glyphs.is_empty());
+        assert!((run.advance_width - 10.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn physical_bitmap_geometry_is_normalized_to_logical_units() {
+        let mut cache = TextRunCache::new();
+        let metrics = test_metrics();
+        assert!(cache.upsert_at_scale(1, "AB", &metrics, 1.0, &test_glyph_fn));
+        let at_one = cache.get(1).expect("1x run").clone();
+
+        let double_glyph = |ch| {
+            test_glyph_fn(ch).map(|mut glyph| {
+                glyph.width *= 2;
+                glyph.height *= 2;
+                glyph.bearing_x *= 2;
+                glyph.bearing_y *= 2;
+                glyph.advance_width *= 2.0;
+                glyph
+            })
+        };
+        assert!(cache.upsert_at_scale(1, "AB", &metrics, 2.0, &double_glyph));
+        let at_two = cache.get(1).expect("2x run");
+
+        assert_eq!(at_one.glyphs.len(), at_two.glyphs.len());
+        assert!((at_one.advance_width - at_two.advance_width).abs() < f32::EPSILON);
+        for (one, two) in at_one.glyphs.iter().zip(&at_two.glyphs) {
+            assert!((one.origin.x - two.origin.x).abs() < f32::EPSILON);
+            assert!((one.origin.y - two.origin.y).abs() < f32::EPSILON);
+            assert!((one.width - two.width).abs() < f32::EPSILON);
+            assert!((one.height - two.height).abs() < f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn raster_scale_change_rebuilds_an_otherwise_identical_run() {
+        let mut cache = TextRunCache::new();
+        let metrics = test_metrics();
+
+        assert!(cache.upsert_at_scale(7, "A", &metrics, 1.0, &test_glyph_fn));
+        assert!(!cache.upsert_at_scale(7, "A", &metrics, 1.0, &test_glyph_fn));
+        assert!(cache.upsert_at_scale(7, "A", &metrics, 1.5, &test_glyph_fn));
     }
 }

@@ -416,8 +416,10 @@ impl TextRenderer {
             .glyphs
             .iter()
             .map(|g| {
-                let glyph_origin =
-                    Point::new(batch.origin.x + g.origin.x, batch.origin.y + g.origin.y);
+                let glyph_origin = snap_origin_to_physical_pixel_grid(
+                    Point::new(batch.origin.x + g.origin.x, batch.origin.y + g.origin.y),
+                    viewport.scale_factor,
+                );
                 let dp_rect = Rect::from_min_size(glyph_origin, Size::new(g.width, g.height));
                 let ndc = viewport.dp_rect_to_ndc(&dp_rect);
                 let packed = pack_active_clips(batch.clips, glyph_origin);
@@ -448,6 +450,18 @@ impl TextRenderer {
     }
 }
 
+fn snap_origin_to_physical_pixel_grid(origin: Point, scale_factor: f32) -> Point {
+    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+    Point::new(
+        (origin.x * scale_factor).round() / scale_factor,
+        (origin.y * scale_factor).round() / scale_factor,
+    )
+}
+
 fn grown_instance_capacity(current: u32, required: u32) -> u32 {
     if required <= current {
         current
@@ -458,8 +472,8 @@ fn grown_instance_capacity(current: u32, required: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::grown_instance_capacity;
-
+    use super::{grown_instance_capacity, snap_origin_to_physical_pixel_grid};
+    use crate::layout::Point;
     #[test]
     fn instance_capacity_grows_to_cover_large_text_scenes() {
         assert_eq!(grown_instance_capacity(1024, 1024), 1024);
@@ -468,5 +482,37 @@ mod tests {
             grown_instance_capacity(1 << 31, (1 << 31) + 1),
             (1 << 31) + 1
         );
+    }
+
+    #[test]
+    fn glyph_origins_snap_to_fractional_physical_pixel_grid() {
+        let snapped = snap_origin_to_physical_pixel_grid(Point::new(10.2, 3.6), 1.25);
+
+        assert!((snapped.x * 1.25 - 13.0).abs() < f32::EPSILON);
+        assert!((snapped.y * 1.25 - 5.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn proportional_glyph_origins_each_land_on_the_physical_pixel_grid() {
+        let run_origin = Point::new(10.2, 3.6);
+        let proportional_offsets = [0.0, 4.25, 13.0];
+
+        for scale in [1.25, 1.5] {
+            let origins: Vec<Point> = proportional_offsets
+                .into_iter()
+                .map(|offset| {
+                    snap_origin_to_physical_pixel_grid(
+                        Point::new(run_origin.x + offset, run_origin.y),
+                        scale,
+                    )
+                })
+                .collect();
+
+            for origin in &origins {
+                assert!((origin.x * scale - (origin.x * scale).round()).abs() < f32::EPSILON);
+                assert!((origin.y * scale - (origin.y * scale).round()).abs() < f32::EPSILON);
+            }
+            assert!(origins.windows(2).all(|pair| pair[0].x < pair[1].x));
+        }
     }
 }

@@ -79,6 +79,8 @@ pub struct AtlasGlyph {
     pub bearing_x: i32,
     /// Vertical offset from glyph origin to top edge of bitmap.
     pub bearing_y: i32,
+    /// Horizontal advance in physical pixels at this glyph's raster size.
+    pub advance_width: f32,
     /// Pixel x position within the fixed-size atlas.
     pub atlas_x: u32,
     /// Pixel y position within the fixed-size atlas.
@@ -231,6 +233,7 @@ impl AtlasStore {
                 height: glyph.metrics.height as u32,
                 bearing_x: glyph.metrics.bearing_x,
                 bearing_y: glyph.metrics.bearing_y,
+                advance_width: glyph.metrics.advance_width,
                 atlas_x: x,
                 atlas_y: y,
             },
@@ -282,12 +285,38 @@ impl GlyphAtlas {
     /// When `evicted` is true, all UVs have changed and the caller must rebuild
     /// all GPU vertices.
     pub fn rasterize_new(&mut self, fonts: &FontBook, chars: &[char]) -> RasterizeResult {
+        let size = FontSize::new(fonts.size()).expect("configured font size must be valid");
+        self.font_size = size;
+        self.rasterize_new_at_size(fonts, chars, size)
+    }
+
+    /// Rasterizes uncached glyphs at an explicit physical font size.
+    ///
+    /// Unlike [`Self::rasterize_new`], this does not change the default size used
+    /// by the legacy character lookup path.
+    pub fn rasterize_new_at_size(
+        &mut self,
+        fonts: &FontBook,
+        chars: &[char],
+        size: FontSize,
+    ) -> RasterizeResult {
+        let retained_keys = self.store.glyph_keys();
+        self.rasterize_new_at_size_retaining(fonts, chars, size, &retained_keys)
+    }
+
+    /// Rasterizes at an explicit size and, if repacking is required, evicts
+    /// entries not present in `retained_keys`.
+    pub fn rasterize_new_at_size_retaining(
+        &mut self,
+        fonts: &FontBook,
+        chars: &[char],
+        size: FontSize,
+        retained_keys: &[GlyphKey],
+    ) -> RasterizeResult {
         let mut chars: Vec<char> = chars.to_vec();
         chars.sort_unstable();
         chars.dedup();
 
-        let size = FontSize::new(fonts.size()).expect("configured font size must be valid");
-        self.font_size = size;
         let style = FontStyle::REGULAR;
 
         // Collect only new available glyphs (not yet cached), deduplicated by GlyphKey.
@@ -336,10 +365,9 @@ impl GlyphAtlas {
 
         if !self.store.add_incremental(&new_glyphs) {
             tracing::debug!("atlas full; evicting and rebuilding");
-            let all_keys: Vec<GlyphKey> = self
-                .store
-                .glyph_keys()
-                .into_iter()
+            let all_keys: Vec<GlyphKey> = retained_keys
+                .iter()
+                .copied()
                 .chain(new_keys.iter().copied())
                 .collect();
             self.rebuild_by_keys(fonts, &all_keys);
@@ -421,7 +449,12 @@ impl GlyphAtlas {
     /// Looks up a cached glyph by character. Returns `None` if not cached
     /// or if the character resolved as unavailable.
     pub fn glyph_by_char(&self, ch: char) -> Option<&AtlasGlyph> {
-        let request = ResolutionKey::new(ch, self.font_size, FontStyle::REGULAR);
+        self.glyph_by_char_at_size(ch, self.font_size)
+    }
+
+    /// Looks up a cached glyph by character at an explicit physical font size.
+    pub fn glyph_by_char_at_size(&self, ch: char, size: FontSize) -> Option<&AtlasGlyph> {
+        let request = ResolutionKey::new(ch, size, FontStyle::REGULAR);
         match self.resolution.get(&request)? {
             GlyphResolution::Available(key) => self.store.glyph(*key),
             GlyphResolution::Unavailable => None,
@@ -496,19 +529,19 @@ mod tests {
     }
 
     #[test]
-    fn rasterize_new_skips_spaces_with_zero_width() {
+    fn rasterize_new_retains_metric_only_space() {
         let fonts = test_font_book();
         let mut atlas = GlyphAtlas::new();
 
-        // Space char produces zero-width bitmap; atlas should skip it.
-        let chars: Vec<char> = vec!['a', ' ', 'b'];
-        let result = atlas.rasterize_new(&fonts, &chars);
+        let result = atlas.rasterize_new(&fonts, &['a', ' ', 'b']);
 
-        // 'a' and 'b' added; space rasterized but skipped (width 0).
-        assert_eq!(result.new_keys.len(), 3); // space also returned as "new" but has width 0
-        // Caller should pre-filter spaces; this test confirms atlas doesn't crash.
+        assert_eq!(result.new_keys.len(), 3);
+        let space = atlas
+            .glyph_by_char(' ')
+            .expect("space metrics should remain in the atlas");
+        assert_eq!((space.width, space.height), (0, 0));
+        assert!(space.advance_width > 0.0);
     }
-
     #[test]
     fn cached_atlas_reuses_existing_glyphs() {
         let fonts = test_font_book();
@@ -1105,17 +1138,37 @@ mod tests {
     // ── AtlasGlyph bearing fields tests ──────────────────────────────
 
     #[test]
-    fn should_store_bearing_fields_in_atlas_glyph() {
+    fn should_store_bearing_and_advance_fields_in_atlas_glyph() {
         let fonts = test_font_book();
         let mut atlas = GlyphAtlas::new();
         let _ = atlas.rasterize_new(&fonts, &['A']);
         let glyph = atlas.glyph_by_char('A').expect("A should be in atlas");
-        // bearing_x and bearing_y should be set (exact values depend on the font).
-        // Just verify the fields are accessible and the struct is coherent.
+        let key = expect_key(fonts.resolve('A', FONT_SIZE, FontStyle::REGULAR));
+        let (bounds, _) = fonts.rasterize_from_key(key);
+
+        assert_eq!(
+            glyph.advance_width.to_bits(),
+            bounds.advance_width.to_bits()
+        );
         let _ = glyph.bearing_x;
         let _ = glyph.bearing_y;
         assert!(glyph.width > 0, "A glyph should have positive width");
         assert!(glyph.height > 0, "A glyph should have positive height");
+    }
+
+    #[test]
+    fn rebuild_preserves_glyph_advance_width() {
+        let fonts = test_font_book();
+        let mut atlas = GlyphAtlas::new();
+        atlas.rebuild(&fonts, &['W']);
+        let glyph = atlas.glyph_by_char('W').expect("W should be in atlas");
+        let key = expect_key(fonts.resolve('W', FONT_SIZE, FontStyle::REGULAR));
+        let (bounds, _) = fonts.rasterize_from_key(key);
+
+        assert_eq!(
+            glyph.advance_width.to_bits(),
+            bounds.advance_width.to_bits()
+        );
     }
 
     #[test]
@@ -1169,5 +1222,27 @@ mod tests {
         assert_eq!(by_char.atlas_y, by_key.atlas_y);
         assert_eq!(by_char.width, by_key.width);
         assert_eq!(by_char.height, by_key.height);
+    }
+
+    #[test]
+    fn explicit_sizes_coexist_without_changing_default_lookup() {
+        let fonts = test_font_book();
+        let mut atlas = GlyphAtlas::new();
+        let default_size = FontSize::new(fonts.size()).expect("valid default size");
+        let double_size = FontSize::new(fonts.size() * 2.0).expect("valid double size");
+
+        atlas.rasterize_new(&fonts, &['M']);
+        atlas.rasterize_new_at_size(&fonts, &['M'], double_size);
+
+        let default_glyph = atlas
+            .glyph_by_char('M')
+            .expect("default-size glyph should remain available");
+        let double_glyph = atlas
+            .glyph_by_char_at_size('M', double_size)
+            .expect("double-size glyph should be available");
+
+        assert_eq!(default_glyph.key.size, default_size);
+        assert_eq!(double_glyph.key.size, double_size);
+        assert_ne!(default_glyph.key, double_glyph.key);
     }
 }

@@ -9,9 +9,10 @@ use crate::renderer::widget_text_atlas::WidgetTextAtlas;
 use crate::scene::clip::RoundedClip;
 use crate::scene::primitive::{
     ExternalDrawContext, ExternalDrawFn, ExternalDrawGpu, ExternalDrawId, ExternalDrawMode,
-    Primitive,
+    Primitive, ScissorRect,
 };
 use crate::scene::{SceneDelta, SceneGraph};
+use crate::signal::RuntimeId;
 use crate::text::{GlyphFn, TextMetrics, TextRunCache};
 use hashbrown::HashMap;
 use std::cell::RefCell;
@@ -22,7 +23,7 @@ use std::sync::Arc;
 enum ExternalClipPlan {
     Skip,
     Draw {
-        scissor: (u32, u32, u32, u32),
+        scissor: ScissorRect,
         apply_rounded_mask: bool,
     },
 }
@@ -34,7 +35,7 @@ impl ExternalClipPlan {
             viewport.scale_factor,
             viewport.physical_size,
         );
-        if scissor.2 == 0 || scissor.3 == 0 {
+        if scissor.is_empty() {
             return Self::Skip;
         }
         let mut apply_rounded_mask = false;
@@ -48,8 +49,8 @@ impl ExternalClipPlan {
                 viewport.scale_factor,
                 viewport.physical_size,
             );
-            scissor = intersect_scissor(scissor, clip_scissor);
-            if scissor.2 == 0 || scissor.3 == 0 {
+            scissor = scissor.intersect(&clip_scissor);
+            if scissor.is_empty() {
                 return Self::Skip;
             }
         }
@@ -60,19 +61,6 @@ impl ExternalClipPlan {
     }
 }
 
-fn intersect_scissor(lhs: (u32, u32, u32, u32), rhs: (u32, u32, u32, u32)) -> (u32, u32, u32, u32) {
-    let left = lhs.0.max(rhs.0);
-    let top = lhs.1.max(rhs.1);
-    let right = lhs.0.saturating_add(lhs.2).min(rhs.0.saturating_add(rhs.2));
-    let bottom = lhs.1.saturating_add(lhs.3).min(rhs.1.saturating_add(rhs.3));
-    (
-        left,
-        top,
-        right.saturating_sub(left),
-        bottom.saturating_sub(top),
-    )
-}
-
 /// Callback arguments plus clip scissor for one external SceneItem.
 ///
 /// Ancestor clips may shrink `scissor` and set `apply_rounded_mask`; they must
@@ -81,7 +69,7 @@ struct ExternalDrawInvocation {
     id: ExternalDrawId,
     context: ExternalDrawContext,
     mode: ExternalDrawMode,
-    scissor: (u32, u32, u32, u32),
+    scissor: ScissorRect,
     apply_rounded_mask: bool,
 }
 
@@ -250,6 +238,8 @@ impl FrameEncoder {
         &mut self,
         scene_graph: &SceneGraph,
         metrics: &TextMetrics,
+        owner: RuntimeId,
+        raster_scale: f32,
         queue: &wgpu::Queue,
     ) {
         let Some(atlas) = self.text_atlas.as_ref().map(Rc::clone) else {
@@ -257,6 +247,7 @@ impl FrameEncoder {
         };
         let mut atlas = atlas.borrow_mut();
         let revision = atlas.ensure_scene_text(
+            owner,
             scene_graph.items().iter().filter_map(|item| {
                 if let Primitive::Text { text, .. } = &item.primitive {
                     Some(text.as_ref())
@@ -264,10 +255,21 @@ impl FrameEncoder {
                     None
                 }
             }),
+            raster_scale,
             queue,
         );
-        let glyph_fn = |ch| atlas.glyph(ch).copied();
-        self.prepare_text_runs(scene_graph, metrics, revision, &glyph_fn);
+        let glyph_fn = |ch| atlas.glyph(ch, raster_scale).copied();
+        self.prepare_text_runs_at_scale(scene_graph, metrics, revision, raster_scale, &glyph_fn);
+    }
+
+    pub(crate) fn release_text_owner(&mut self, owner: RuntimeId) {
+        if let Some(atlas) = &self.text_atlas {
+            atlas.borrow_mut().release_owner(owner);
+        }
+    }
+
+    pub(crate) fn cached_text_run_count(&self) -> usize {
+        self.text_run_cache.len()
     }
 
     #[cfg(test)]
@@ -289,11 +291,23 @@ impl FrameEncoder {
     ///
     /// Scene item IDs are cache keys. A changed atlas revision invalidates every
     /// run because a repack may have changed all previously cached UVs.
+    #[cfg(test)]
     pub(crate) fn prepare_text_runs(
         &mut self,
         scene_graph: &SceneGraph,
         metrics: &TextMetrics,
         atlas_revision: u64,
+        glyph_fn: &GlyphFn<'_>,
+    ) {
+        self.prepare_text_runs_at_scale(scene_graph, metrics, atlas_revision, 1.0, glyph_fn);
+    }
+
+    pub(crate) fn prepare_text_runs_at_scale(
+        &mut self,
+        scene_graph: &SceneGraph,
+        metrics: &TextMetrics,
+        atlas_revision: u64,
+        raster_scale: f32,
         glyph_fn: &GlyphFn<'_>,
     ) {
         let revision_changed = self.prepared_atlas_revision != Some(atlas_revision);
@@ -306,7 +320,13 @@ impl FrameEncoder {
         for item in scene_graph.items() {
             if let crate::scene::primitive::Primitive::Text { text, .. } = &item.primitive {
                 let run_id = crate::scene::primitive::TextRunId::new(item.id);
-                changed |= self.text_run_cache.upsert(run_id, text, metrics, glyph_fn);
+                changed |= self.text_run_cache.upsert_at_scale(
+                    run_id,
+                    text,
+                    metrics,
+                    raster_scale,
+                    glyph_fn,
+                );
                 live_ids.push(run_id);
             }
         }
@@ -390,10 +410,10 @@ impl FrameEncoder {
                         scene.external_draws.get(draw),
                     ) {
                         pass.set_scissor_rect(
-                            invocation.scissor.0,
-                            invocation.scissor.1,
-                            invocation.scissor.2,
-                            invocation.scissor.3,
+                            invocation.scissor.x,
+                            invocation.scissor.y,
+                            invocation.scissor.width,
+                            invocation.scissor.height,
                         );
                         cb(
                             invocation.id,
@@ -405,10 +425,10 @@ impl FrameEncoder {
                         if invocation.apply_rounded_mask {
                             // Handlers may replace scissor; dest-in must stay on the plan.
                             pass.set_scissor_rect(
-                                invocation.scissor.0,
-                                invocation.scissor.1,
-                                invocation.scissor.2,
-                                invocation.scissor.3,
+                                invocation.scissor.x,
+                                invocation.scissor.y,
+                                invocation.scissor.width,
+                                invocation.scissor.height,
                             );
                             renderer.encode_clip_mask(pass, next_mask_slot);
                             next_mask_slot += 1;
