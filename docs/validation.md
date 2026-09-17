@@ -104,6 +104,31 @@ For startup settings, copy `config.example.toml` to `~/.harbor/config.toml` and 
 
 Unix runtime acceptance belongs to roadmap phase P8 and does not block earlier Windows phases.
 
+## Keybinding and Conflict Policy Evidence
+
+Configurable keybinding validation requires evidence that:
+
+- Default bindings (`NewTab: Ctrl+T`, `CloseTab: Ctrl+W`, `NextTab: Ctrl+Tab`, `PreviousTab: Ctrl+Shift+Tab`, `SelectTab(1..9): Ctrl+1..9`, `Paste: Ctrl+V`) are documented and active by default.
+- User overrides under `[keybindings]` in `config.toml` rebind actions, while invalid entries or unrecognized action names fall back to defaults with warning diagnostics without discarding valid bindings.
+- The conflict policy is explicit: UI-bound shortcuts win over terminal input, are consumed by the UI runtime, and never leak protocol markers or bytes to the PTY.
+- Unbound chords (including default chords after being rebound) bypass the UI and reach the terminal encoder for PTY delivery.
+
+Run deterministic keybinding and PTY isolation verification (`cargo` on native Windows, or `cargo.exe` in WSL2 environments):
+
+```bash
+cargo test -p harbor-config --lib keybinding
+cargo test -p harbor-app --lib tab_view::tests::declarative_workspace_respects_configured_keybindings
+cargo test -p harbor-app --lib terminal_view::tests::ui_shortcut_preempts_terminal_and_does_not_leak_to_pty
+cargo test -p harbor --bin harbor dialog::tests::should_match_default_and_custom_paste_shortcuts
+```
+
+Windows runtime smoke test:
+
+1. Launch Harbor on Windows: `cargo run`.
+2. Verify default tab shortcuts (`Ctrl+T`, `Ctrl+W`, `Ctrl+Tab`, `Ctrl+Shift+Tab`, `Ctrl+1..9`) execute UI commands without injecting characters into the running shell.
+3. Configure custom overrides in `~/.harbor/config.toml` (e.g. `new_tab = "Ctrl+Shift+T"`, `paste = "Ctrl+Shift+V"`), restart, and verify the new chords trigger actions while previously default chords (`Ctrl+T`, `Ctrl+V`) pass through to the shell.
+
+> **Dependency note:** Issue #104 remains blocked by upstream P6 dependencies (IME preedit rendering/candidate positioning and SGR mouse stabilization); full exit-gate signoff is deferred until those prerequisites are delivered.
 ## Performance Evidence
 
 Use the procedures in [`performance/profiling-guide.md`](performance/profiling-guide.md). Record at minimum:

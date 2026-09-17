@@ -356,6 +356,68 @@ mod tests {
     }
 
     #[test]
+    fn declarative_workspace_respects_configured_keybindings() {
+        let mut bindings = harbor_config::KeybindingSettings::default();
+        bindings.bind(
+            harbor_config::UiAction::NewTab,
+            harbor_config::KeyChord::ctrl_shift(harbor_config::Key::Character('T')),
+        );
+        bindings.bind(
+            harbor_config::UiAction::CloseTab,
+            harbor_config::KeyChord::ctrl(harbor_config::Key::Character('Q')),
+        );
+
+        let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
+        let inputs = MainWindowRootInputs::new(controller.clone(), false, [0.0; 3])
+            .with_keybindings(bindings);
+        let mut runtime = Runtime::new();
+        runtime.set_viewport(Viewport::new(1000, 320, 1.0));
+        runtime.set_root(crate::tab_view::ui::main_window_root(inputs));
+
+        // Ctrl+Shift+T triggers NewTab
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Character('T'),
+            modifiers: Modifiers {
+                ctrl: true,
+                shift: true,
+                ..Modifiers::default()
+            },
+        }));
+        assert_eq!(
+            controller.drain_actions(),
+            [TabCommandRequest::shortcut(TabCommand::New)]
+        );
+        // Consumed UI action leaves no deferred external input
+        assert!(runtime.drain_external_input().is_empty());
+
+        // Old default Ctrl+T does NOT trigger NewTab anymore
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Character('t'),
+            modifiers: ctrl(),
+        }));
+        assert!(controller.drain_actions().is_empty());
+
+        // An uppercase config character without Shift matches the lowercase
+        // logical key produced by an unshifted key press.
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Character('q'),
+            modifiers: ctrl(),
+        }));
+        assert_eq!(
+            controller.drain_actions(),
+            [TabCommandRequest::shortcut(TabCommand::CloseActive)]
+        );
+        assert!(runtime.drain_external_input().is_empty());
+
+        // Old default Ctrl+W does NOT trigger CloseActive anymore
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Character('w'),
+            modifiers: ctrl(),
+        }));
+        assert!(controller.drain_actions().is_empty());
+    }
+
+    #[test]
     fn workspace_publishes_the_final_terminal_panel_allocation() {
         let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
         let mut runtime = mount(controller.clone(), 1000, 320);

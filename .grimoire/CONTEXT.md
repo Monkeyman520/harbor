@@ -754,3 +754,17 @@ Project domain concepts and terminology.
 - **Relationships:**
   - belongs to TOML User Settings
   - configures Default Background Cell
+
+### Configurable Keybinding Policy
+- **Definition:** The Harbor mechanism that maps key chords to UI actions with user overrides loaded from `config.toml`, falling back to built-in defaults where UI-bound chords take precedence over PTY input without moving terminal business policy into the widget runtime.
+- **Relationships:**
+  - belongs to Application Business Host
+  - references UI-Wins Key Precedence
+  - communicates with Terminal Input Semantics
+
+### UI-Wins Key Precedence
+- **Definition:** Harbor's explicit conflict policy where registered UI action bindings take precedence over terminal input; matched UI chords are consumed by the host and never forwarded to the PTY encoder, while unhandled chords pass through to the terminal application.
+- **Synonyms:** Conflict Policy
+- **Relationships:**
+  - belongs to Configurable Keybinding Policy
+  - communicates with Terminal Input Semantics

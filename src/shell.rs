@@ -16,7 +16,7 @@ use winit::{
 use crate::backdrop::{
     MainWindowPlatformHooks, MainWindowPlatformState, os_build, select_backend, wasdk_available,
 };
-use crate::dialog::{PasteController, PasteEventOutcome, is_paste_shortcut};
+use crate::dialog::{PasteController, PasteEventOutcome};
 use crate::effects::apply_control_flow;
 use crate::event::{AppEvent, external_invalidation_for_app_event};
 use crate::tab_coordinator::{
@@ -314,7 +314,10 @@ impl ActiveSession {
             return;
         }
 
-        if is_paste_shortcut(&event, self.main_host.modifiers()) {
+        if self
+            .paste
+            .is_paste_shortcut(&event, self.main_host.modifiers())
+        {
             let active_terminal = self.tabs.active_terminal();
             let outcome = self.paste.paste_from_clipboard(
                 event_loop,
@@ -434,6 +437,7 @@ impl Shell {
         );
         let font_settings = settings.font.clone();
         let shell_command = ShellCommand::new(settings.shell.program, settings.shell.args);
+        let keybindings = settings.keybindings.clone();
         let event_proxy = self.event_proxy.clone();
         #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
         let hmr_root_inputs = Rc::new(RefCell::new(None::<MainWindowRootInputs>));
@@ -502,7 +506,8 @@ impl Shell {
                     tab_ui.clone(),
                     context.backdrop_available(),
                     backdrop_fallback,
-                );
+                )
+                .with_keybindings(keybindings.clone());
                 #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
                 {
                     *bootstrap_hmr_inputs.borrow_mut() = Some(root_inputs.clone());
@@ -510,7 +515,8 @@ impl Shell {
                 let root = build_application_root(root_inputs.clone())
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
                 let tabs = TabCoordinator::new(tabs, tab_ui, factory);
-                let paste = PasteController::new(input_gate);
+                let paste_chord = keybindings.chord_for(harbor_config::UiAction::Paste);
+                let paste = PasteController::new(input_gate).with_paste_chord(paste_chord);
                 Ok((root, (tabs, paste)))
             },
         )

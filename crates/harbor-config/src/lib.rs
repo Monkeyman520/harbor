@@ -12,6 +12,8 @@ use std::{
 
 mod color;
 pub use color::{Color, Palette, Rgba};
+mod keybinding;
+pub use keybinding::{Key, KeyChord, KeybindingSettings, Modifiers, ParseKeyChordError, UiAction};
 use toml::{Table, Value};
 
 pub const FONT_SIZE: f32 = 24.0;
@@ -32,6 +34,7 @@ pub struct Settings {
     pub font: FontSettings,
     pub shell: ShellSettings,
     pub colors: Palette,
+    pub keybindings: KeybindingSettings,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -126,7 +129,12 @@ fn parse_document(document: Value) -> SettingsLoad {
     let Some(root) = document.as_table() else {
         return SettingsLoad::defaults("settings document must be a TOML table");
     };
-    warn_unknown(root, &["font", "shell", "colors"], "", &mut diagnostics);
+    warn_unknown(
+        root,
+        &["font", "shell", "colors", "keybindings"],
+        "",
+        &mut diagnostics,
+    );
 
     let mut settings = Settings::default();
     parse_font(root.get("font"), &mut settings.font, &mut diagnostics);
@@ -137,6 +145,11 @@ fn parse_document(document: Value) -> SettingsLoad {
             None => diagnostics.push(error("colors: invalid palette; using all defaults")),
         }
     }
+    parse_keybindings(
+        root.get("keybindings"),
+        &mut settings.keybindings,
+        &mut diagnostics,
+    );
 
     SettingsLoad {
         settings,
@@ -208,6 +221,42 @@ fn parse_shell(
             None => diagnostics.push(error(
                 "shell.args must be an array of strings; using no arguments",
             )),
+        }
+    }
+}
+
+fn parse_keybindings(
+    value: Option<&Value>,
+    settings: &mut KeybindingSettings,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(value) = value else { return };
+    let Some(table) = value.as_table() else {
+        diagnostics.push(error("keybindings must be a table"));
+        return;
+    };
+
+    for (key, val) in table {
+        let Some(action) = UiAction::from_config_name(key) else {
+            diagnostics.push(Diagnostic {
+                level: DiagnosticLevel::Warning,
+                message: format!("keybindings: unknown action `{key}`"),
+            });
+            continue;
+        };
+
+        match val.as_str() {
+            Some(chord_str) => match chord_str.parse::<KeyChord>() {
+                Ok(chord) => settings.bind(action, chord),
+                Err(err) => diagnostics.push(Diagnostic {
+                    level: DiagnosticLevel::Warning,
+                    message: format!("keybindings.{key}: invalid chord `{chord_str}`: {err}"),
+                }),
+            },
+            None => diagnostics.push(Diagnostic {
+                level: DiagnosticLevel::Warning,
+                message: format!("keybindings.{key}: must be a string"),
+            }),
         }
     }
 }
@@ -483,5 +532,46 @@ mod tests {
         assert_eq!(style.tint_opacity, 0.06);
         assert_eq!(style.luminosity_opacity, 1.0);
         assert_eq!(style.fallback, [0.1176, 0.1176, 0.1176]);
+    }
+
+    #[test]
+    fn keybinding_fields_override_defaults_and_warn_on_invalid() {
+        let loaded = parse(
+            r##"
+            [keybindings]
+            new_tab = "Ctrl+Shift+T"
+            close_tab = "Ctrl+Shift+W"
+            unknown_action = "Ctrl+U"
+            next_tab = "InvalidChord++"
+            previous_tab = 42
+        "##,
+        );
+
+        assert_eq!(
+            loaded.settings.keybindings.chord_for(UiAction::NewTab),
+            Some(KeyChord::ctrl_shift(Key::Character('T')))
+        );
+        assert_eq!(
+            loaded.settings.keybindings.chord_for(UiAction::CloseTab),
+            Some(KeyChord::ctrl_shift(Key::Character('W')))
+        );
+        // Unchanged default
+        assert_eq!(
+            loaded.settings.keybindings.chord_for(UiAction::NextTab),
+            Some(KeyChord::ctrl(Key::Tab))
+        );
+        assert_eq!(
+            loaded.settings.keybindings.chord_for(UiAction::PreviousTab),
+            Some(KeyChord::ctrl_shift(Key::Tab))
+        );
+        // 3 warnings: unknown_action, invalid chord, non-string value
+        assert_eq!(
+            loaded
+                .diagnostics
+                .iter()
+                .filter(|d| d.level == DiagnosticLevel::Warning)
+                .count(),
+            3
+        );
     }
 }

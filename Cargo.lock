@@ -853,6 +853,7 @@ dependencies = [
  "harbor-config",
  "harbor-terminal",
  "harbor-widget",
+ "parking_lot",
  "tracing",
  "wgpu",
 ]

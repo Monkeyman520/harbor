@@ -840,6 +840,96 @@ mod tests {
         assert!(!effects.request_redraw);
     }
 
+    struct RecordingWriter {
+        bytes: Arc<parking_lot::Mutex<Vec<u8>>>,
+    }
+
+    impl std::io::Write for RecordingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.bytes.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    #[allow(clippy::arc_with_non_send_sync)]
+    fn ui_shortcut_preempts_terminal_and_does_not_leak_to_pty() {
+        let written = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let writer = RecordingWriter {
+            bytes: Arc::clone(&written),
+        };
+        let terminal = Terminal::new_headless_with_io(4, 20, std::io::empty(), writer, || true);
+        let terminal_arc = Arc::new(Mutex::new(terminal));
+        let bridge = TerminalWidgetBridge::new(
+            ExternalDrawId::new(1),
+            terminal_arc,
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        let chord = harbor_widget::KeyChord::new(
+            WidgetKey::Character('t'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+        );
+        let action_triggered = Arc::new(AtomicBool::new(false));
+        let action_flag = Arc::clone(&action_triggered);
+
+        let root = harbor_widget::Actions::new(
+            harbor_widget::Shortcuts::new(terminal_widget(bridge)).bind(chord, ()),
+            move |()| {
+                action_flag.store(true, Ordering::SeqCst);
+            },
+        );
+
+        let mut rt = harbor_widget::runtime::Runtime::new();
+        rt.set_root(root);
+        rt.update(std::time::Instant::now());
+        assert!(rt.focus_first_focusable());
+        let _ = rt.drain_external_input();
+
+        // 1. Dispatch matched UI chord: Ctrl+T
+        rt.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: WidgetKey::Character('t'),
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+        }));
+
+        // UI action consumed the event
+        assert!(action_triggered.load(Ordering::SeqCst));
+        // No external input was queued for the terminal!
+        assert!(rt.drain_external_input().is_empty());
+        // PTY received ZERO bytes! (UI-only chord never leaks protocol markers)
+        assert!(written.lock().is_empty());
+
+        // 2. Dispatch unmatched chord: Ctrl+A
+        rt.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: WidgetKey::Character('a'),
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+        }));
+
+        // Unmatched chord bypassed UI shortcuts and was delivered directly to the terminal bridge
+        assert_eq!(written.lock().as_slice(), &[0x01]);
+        written.lock().clear();
+
+        // 3. Dispatch ordinary key: 'z'
+        rt.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: WidgetKey::Character('z'),
+            modifiers: Modifiers::default(),
+        }));
+        assert_eq!(written.lock().as_slice(), b"z");
+    }
+
     #[test]
     fn should_scroll_when_gate_allows_wheel() {
         // Arrange

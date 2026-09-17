@@ -14,6 +14,16 @@ impl KeyChord {
     pub const fn new(key: Key, modifiers: Modifiers) -> Self {
         Self { key, modifiers }
     }
+
+    fn matches(self, other: Self) -> bool {
+        if self.modifiers != other.modifiers {
+            return false;
+        }
+        match (self.key, other.key) {
+            (Key::Character(left), Key::Character(right)) => left.eq_ignore_ascii_case(&right),
+            (left, right) => left == right,
+        }
+    }
 }
 
 /// Maps key chords to typed action values for one descendant subtree.
@@ -81,7 +91,41 @@ impl<A: Clone + 'static> ActionProviderView for Shortcuts<A> {
     fn shortcut_action(&self, chord: KeyChord) -> Option<Box<dyn Any>> {
         self.bindings
             .iter()
-            .find(|(binding, _)| *binding == chord)
+            .find(|(binding, _)| binding.matches(chord))
             .map(|(_, action)| Box::new(action.clone()) as Box<dyn Any>)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn character_chords_ignore_ascii_case_but_not_modifiers() {
+        let ctrl_lower = KeyChord::new(
+            Key::Character('q'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+        );
+        let ctrl_upper = KeyChord::new(
+            Key::Character('Q'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+        );
+        let ctrl_shift_upper = KeyChord::new(
+            Key::Character('Q'),
+            Modifiers {
+                ctrl: true,
+                shift: true,
+                ..Modifiers::default()
+            },
+        );
+
+        assert!(ctrl_lower.matches(ctrl_upper));
+        assert!(!ctrl_lower.matches(ctrl_shift_upper));
     }
 }

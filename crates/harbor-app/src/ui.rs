@@ -31,6 +31,7 @@ pub struct MainWindowRootInputs {
     pub controller: TabUiController,
     pub backdrop_available: bool,
     pub backdrop_fallback: [f32; 3],
+    pub keybindings: harbor_config::KeybindingSettings,
 }
 
 impl MainWindowRootInputs {
@@ -43,7 +44,13 @@ impl MainWindowRootInputs {
             controller,
             backdrop_available,
             backdrop_fallback,
+            keybindings: harbor_config::KeybindingSettings::default(),
         }
+    }
+
+    pub fn with_keybindings(mut self, keybindings: harbor_config::KeybindingSettings) -> Self {
+        self.keybindings = keybindings;
+        self
     }
 }
 
@@ -82,7 +89,7 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
         .clone()
         .expect("workspace has an active terminal until window exit");
     let root = root_padding(props.backdrop_available, props.backdrop_fallback);
-    let shortcuts = shortcuts();
+    let shortcuts = shortcuts(&props.keybindings);
     let actions = Actions::handler(move |request| action_dispatcher.dispatch(request));
 
     harbor_widget::view! { cx; root => {
@@ -262,40 +269,90 @@ pub fn build_confirmation_root(
     move |cx: &mut BuildCx| confirmation_dialog(cx, &props)
 }
 
-fn shortcuts() -> Shortcuts<TabCommandRequest> {
-    let shortcuts = Shortcuts::empty()
-        .bind(
-            KeyChord::new(Key::Character('t'), ctrl()),
-            TabCommandRequest::shortcut(TabCommand::New),
-        )
-        .bind(
-            KeyChord::new(Key::Character('w'), ctrl()),
-            TabCommandRequest::shortcut(TabCommand::CloseActive),
-        )
-        .bind(
-            KeyChord::new(Key::Tab, ctrl()),
-            TabCommandRequest::shortcut(TabCommand::Next),
-        )
-        .bind(
-            KeyChord::new(
-                Key::Tab,
-                Modifiers {
-                    ctrl: true,
-                    shift: true,
-                    ..Modifiers::default()
-                },
-            ),
-            TabCommandRequest::shortcut(TabCommand::Previous),
-        );
-    (1..=9).fold(shortcuts, |shortcuts, index| {
-        let digit = char::from_digit(index as u32, 10).expect("numeric shortcut is a digit");
-        shortcuts.bind(
-            KeyChord::new(Key::Character(digit), ctrl()),
-            TabCommandRequest::shortcut(TabCommand::Numeric(TabIndex::from_valid_u8(index as u8))),
-        )
-    })
+fn to_widget_chord(chord: harbor_config::KeyChord) -> Option<KeyChord> {
+    let key = match chord.key {
+        harbor_config::Key::Tab => Key::Tab,
+        harbor_config::Key::Enter => Key::Enter,
+        harbor_config::Key::Space => Key::Space,
+        harbor_config::Key::Escape => Key::Escape,
+        harbor_config::Key::Backspace => Key::Backspace,
+        harbor_config::Key::Insert => Key::Insert,
+        harbor_config::Key::Delete => Key::Delete,
+        harbor_config::Key::ArrowUp => Key::ArrowUp,
+        harbor_config::Key::ArrowDown => Key::ArrowDown,
+        harbor_config::Key::ArrowLeft => Key::ArrowLeft,
+        harbor_config::Key::ArrowRight => Key::ArrowRight,
+        harbor_config::Key::Home => Key::Home,
+        harbor_config::Key::End => Key::End,
+        harbor_config::Key::PageUp => Key::PageUp,
+        harbor_config::Key::PageDown => Key::PageDown,
+        harbor_config::Key::Character(c) => Key::Character(c),
+        harbor_config::Key::F(1) => Key::F1,
+        harbor_config::Key::F(2) => Key::F2,
+        harbor_config::Key::F(3) => Key::F3,
+        harbor_config::Key::F(4) => Key::F4,
+        harbor_config::Key::F(5) => Key::F5,
+        harbor_config::Key::F(6) => Key::F6,
+        harbor_config::Key::F(7) => Key::F7,
+        harbor_config::Key::F(8) => Key::F8,
+        harbor_config::Key::F(9) => Key::F9,
+        harbor_config::Key::F(10) => Key::F10,
+        harbor_config::Key::F(11) => Key::F11,
+        harbor_config::Key::F(12) => Key::F12,
+        _ => return None,
+    };
+    let modifiers = Modifiers {
+        shift: chord.modifiers.shift,
+        ctrl: chord.modifiers.ctrl,
+        alt: chord.modifiers.alt,
+        meta: chord.modifiers.meta,
+    };
+    Some(KeyChord::new(key, modifiers))
 }
 
+fn shortcuts(bindings: &harbor_config::KeybindingSettings) -> Shortcuts<TabCommandRequest> {
+    let mut shortcuts = Shortcuts::empty();
+
+    if let Some(chord) = bindings
+        .chord_for(harbor_config::UiAction::NewTab)
+        .and_then(to_widget_chord)
+    {
+        shortcuts = shortcuts.bind(chord, TabCommandRequest::shortcut(TabCommand::New));
+    }
+    if let Some(chord) = bindings
+        .chord_for(harbor_config::UiAction::CloseTab)
+        .and_then(to_widget_chord)
+    {
+        shortcuts = shortcuts.bind(chord, TabCommandRequest::shortcut(TabCommand::CloseActive));
+    }
+    if let Some(chord) = bindings
+        .chord_for(harbor_config::UiAction::NextTab)
+        .and_then(to_widget_chord)
+    {
+        shortcuts = shortcuts.bind(chord, TabCommandRequest::shortcut(TabCommand::Next));
+    }
+    if let Some(chord) = bindings
+        .chord_for(harbor_config::UiAction::PreviousTab)
+        .and_then(to_widget_chord)
+    {
+        shortcuts = shortcuts.bind(chord, TabCommandRequest::shortcut(TabCommand::Previous));
+    }
+    for index in 1..=9 {
+        if let Some(chord) = bindings
+            .chord_for(harbor_config::UiAction::SelectTab(index))
+            .and_then(to_widget_chord)
+        {
+            shortcuts = shortcuts.bind(
+                chord,
+                TabCommandRequest::shortcut(TabCommand::Numeric(TabIndex::from_valid_u8(index))),
+            );
+        }
+    }
+
+    shortcuts
+}
+
+#[cfg(test)]
 pub(super) fn ctrl() -> Modifiers {
     Modifiers {
         ctrl: true,

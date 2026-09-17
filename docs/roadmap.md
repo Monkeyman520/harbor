@@ -191,7 +191,7 @@ Every implemented string effect has explicit size, cancellation, permission, and
 - Focus reporting (`CSI I` / `CSI O`) behind mode `?1004`.
 - X10, normal, button-event, any-event, and SGR mouse modes with correct priority.
 - IME preedit rendering and candidate-window positioning near the terminal cursor.
-- Configurable keybindings and conflict policy.
+- Configurable keybindings and UI-wins conflict policy ([ADR 0039](../.grimoire/adr/0039-configurable-keybindings-and-conflict-policy.md); evidence in [`validation.md`](validation.md)).
 - ModifyOtherKeys or Kitty keyboard support only after traditional input is stable.
 
 ### Exit gate

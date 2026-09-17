@@ -146,16 +146,90 @@ pub(crate) fn write_confirmation_outcome<E>(
     Ok(true)
 }
 
-pub(crate) fn is_paste_shortcut(event: &WindowEvent, modifiers: ModifiersState) -> bool {
+pub(crate) fn matches_paste_key(
+    logical_key: &Key,
+    state: ElementState,
+    modifiers: ModifiersState,
+    chord: Option<&harbor_config::KeyChord>,
+) -> bool {
+    let Some(chord) = chord else {
+        return false;
+    };
+    if state != ElementState::Pressed {
+        return false;
+    }
+    if modifiers.control_key() != chord.modifiers.ctrl
+        || modifiers.alt_key() != chord.modifiers.alt
+        || modifiers.shift_key() != chord.modifiers.shift
+        || modifiers.super_key() != chord.modifiers.meta
+    {
+        return false;
+    }
+    match (chord.key, logical_key) {
+        (harbor_config::Key::Character(expected), Key::Character(actual)) => {
+            actual.eq_ignore_ascii_case(&expected.to_string())
+        }
+        (expected, Key::Named(actual)) => matches_named_key(expected, actual),
+        _ => false,
+    }
+}
+
+fn matches_named_key(expected: harbor_config::Key, actual: &NamedKey) -> bool {
     matches!(
-        event,
-        WindowEvent::KeyboardInput { event, .. }
-            if event.state == ElementState::Pressed
-                && modifiers.control_key()
-                && !modifiers.alt_key()
-                && !modifiers.super_key()
-                && matches!(&event.logical_key, Key::Character(character) if character.eq_ignore_ascii_case("v"))
+        (expected, actual),
+        (harbor_config::Key::Tab, NamedKey::Tab)
+            | (harbor_config::Key::Enter, NamedKey::Enter)
+            | (harbor_config::Key::Space, NamedKey::Space)
+            | (harbor_config::Key::Escape, NamedKey::Escape)
+            | (harbor_config::Key::Backspace, NamedKey::Backspace)
+            | (harbor_config::Key::Insert, NamedKey::Insert)
+            | (harbor_config::Key::Delete, NamedKey::Delete)
+            | (harbor_config::Key::ArrowUp, NamedKey::ArrowUp)
+            | (harbor_config::Key::ArrowDown, NamedKey::ArrowDown)
+            | (harbor_config::Key::ArrowLeft, NamedKey::ArrowLeft)
+            | (harbor_config::Key::ArrowRight, NamedKey::ArrowRight)
+            | (harbor_config::Key::Home, NamedKey::Home)
+            | (harbor_config::Key::End, NamedKey::End)
+            | (harbor_config::Key::PageUp, NamedKey::PageUp)
+            | (harbor_config::Key::PageDown, NamedKey::PageDown)
+            | (harbor_config::Key::F(1), NamedKey::F1)
+            | (harbor_config::Key::F(2), NamedKey::F2)
+            | (harbor_config::Key::F(3), NamedKey::F3)
+            | (harbor_config::Key::F(4), NamedKey::F4)
+            | (harbor_config::Key::F(5), NamedKey::F5)
+            | (harbor_config::Key::F(6), NamedKey::F6)
+            | (harbor_config::Key::F(7), NamedKey::F7)
+            | (harbor_config::Key::F(8), NamedKey::F8)
+            | (harbor_config::Key::F(9), NamedKey::F9)
+            | (harbor_config::Key::F(10), NamedKey::F10)
+            | (harbor_config::Key::F(11), NamedKey::F11)
+            | (harbor_config::Key::F(12), NamedKey::F12)
+            | (harbor_config::Key::F(13), NamedKey::F13)
+            | (harbor_config::Key::F(14), NamedKey::F14)
+            | (harbor_config::Key::F(15), NamedKey::F15)
+            | (harbor_config::Key::F(16), NamedKey::F16)
+            | (harbor_config::Key::F(17), NamedKey::F17)
+            | (harbor_config::Key::F(18), NamedKey::F18)
+            | (harbor_config::Key::F(19), NamedKey::F19)
+            | (harbor_config::Key::F(20), NamedKey::F20)
+            | (harbor_config::Key::F(21), NamedKey::F21)
+            | (harbor_config::Key::F(22), NamedKey::F22)
+            | (harbor_config::Key::F(23), NamedKey::F23)
+            | (harbor_config::Key::F(24), NamedKey::F24)
     )
+}
+
+pub(crate) fn is_paste_shortcut(
+    event: &WindowEvent,
+    modifiers: ModifiersState,
+    chord: Option<&harbor_config::KeyChord>,
+) -> bool {
+    match event {
+        WindowEvent::KeyboardInput {
+            event: key_event, ..
+        } => matches_paste_key(&key_event.logical_key, key_event.state, modifiers, chord),
+        _ => false,
+    }
 }
 
 /// Outcome of a paste confirmation event dispatch.
@@ -175,6 +249,7 @@ pub(crate) enum PasteEventOutcome {
 pub(crate) struct PasteController {
     window: Option<ConfirmationWindow>,
     input_gate: Arc<AtomicBool>,
+    paste_chord: Option<harbor_config::KeyChord>,
 }
 
 impl PasteController {
@@ -182,7 +257,19 @@ impl PasteController {
         Self {
             window: None,
             input_gate,
+            paste_chord: Some(harbor_config::KeyChord::ctrl(
+                harbor_config::Key::Character('v'),
+            )),
         }
+    }
+
+    pub(crate) fn with_paste_chord(mut self, chord: Option<harbor_config::KeyChord>) -> Self {
+        self.paste_chord = chord;
+        self
+    }
+
+    pub(crate) fn is_paste_shortcut(&self, event: &WindowEvent, modifiers: ModifiersState) -> bool {
+        is_paste_shortcut(event, modifiers, self.paste_chord.as_ref())
     }
 
     pub(crate) fn is_active(&self) -> bool {
@@ -197,11 +284,6 @@ impl PasteController {
         self.window
             .as_mut()
             .map(|window| window.about_to_wait(now).unwrap_or(ControlFlowEffect::Wait))
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn is_paste_shortcut(event: &WindowEvent, modifiers: ModifiersState) -> bool {
-        is_paste_shortcut(event, modifiers)
     }
 
     pub(crate) fn handle_dialog_event(
@@ -1093,5 +1175,94 @@ mod tests {
 
         assert_eq!(result, Err("PTY disconnected"));
         assert_eq!(write_attempts.get(), 1);
+    }
+
+    #[test]
+    fn should_match_default_and_custom_paste_shortcuts() {
+        let ctrl_mods = ModifiersState::CONTROL;
+        let ctrl_shift_mods = ModifiersState::CONTROL | ModifiersState::SHIFT;
+
+        let default_chord = harbor_config::KeyChord::ctrl(harbor_config::Key::Character('v'));
+        let custom_chord = harbor_config::KeyChord::ctrl_shift(harbor_config::Key::Character('v'));
+
+        let v_key = Key::Character("v".into());
+        let upper_v_key = Key::Character("V".into());
+        let a_key = Key::Character("a".into());
+        let delete_key = Key::Named(NamedKey::Delete);
+        let f24_key = Key::Named(NamedKey::F24);
+
+        // Default Ctrl+V matches pressed lowercase and uppercase 'v'
+        assert!(matches_paste_key(
+            &v_key,
+            ElementState::Pressed,
+            ctrl_mods,
+            Some(&default_chord)
+        ));
+        assert!(matches_paste_key(
+            &upper_v_key,
+            ElementState::Pressed,
+            ctrl_mods,
+            Some(&default_chord)
+        ));
+        // Released does not match
+        assert!(!matches_paste_key(
+            &v_key,
+            ElementState::Released,
+            ctrl_mods,
+            Some(&default_chord)
+        ));
+        // Modifiers mismatch does not match
+        assert!(!matches_paste_key(
+            &v_key,
+            ElementState::Pressed,
+            ctrl_shift_mods,
+            Some(&default_chord)
+        ));
+
+        // Custom Ctrl+Shift+V matches with shift
+        assert!(matches_paste_key(
+            &v_key,
+            ElementState::Pressed,
+            ctrl_shift_mods,
+            Some(&custom_chord)
+        ));
+        // Custom Ctrl+Shift+V does not match bare Ctrl+V
+        assert!(!matches_paste_key(
+            &v_key,
+            ElementState::Pressed,
+            ctrl_mods,
+            Some(&custom_chord)
+        ));
+
+        // Different character does not match
+        assert!(!matches_paste_key(
+            &a_key,
+            ElementState::Pressed,
+            ctrl_mods,
+            Some(&default_chord)
+        ));
+
+        // Unbound does not match
+        assert!(!matches_paste_key(
+            &v_key,
+            ElementState::Pressed,
+            ctrl_mods,
+            None
+        ));
+
+        // Named and extended function keys accepted by the config model are
+        // also valid paste chords at the winit boundary.
+        assert!(matches_paste_key(
+            &delete_key,
+            ElementState::Pressed,
+            ctrl_mods,
+            Some(&harbor_config::KeyChord::ctrl(harbor_config::Key::Delete))
+        ));
+        assert!(matches_paste_key(
+            &f24_key,
+            ElementState::Pressed,
+            ctrl_mods,
+            Some(&harbor_config::KeyChord::ctrl(harbor_config::Key::F(24)))
+        ));
     }
 }
