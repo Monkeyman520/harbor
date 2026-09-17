@@ -6,7 +6,7 @@ Project domain concepts and terminology.
 
 | Domain | File | Entry Count |
 | --- | --- | ---: |
-| Terminal Protocol | [CONTEXT-terminal-protocol.md](./CONTEXT-terminal-protocol.md) | 30 |
+| Terminal Protocol | [CONTEXT-terminal-protocol.md](./CONTEXT-terminal-protocol.md) | 31 |
 
 ### System-Native Font Loading
 - **Definition:** A `harbor-text` strategy in which system font discovery and font data loading use operating-system APIs to avoid copying complete font files into the Rust heap.
@@ -448,7 +448,7 @@ Project domain concepts and terminology.
   - maintained by Wide Cell Normalization
 
 ### CustomPaint
-- **Definition:** A widget that explicitly marks an "escape hatch" from the normal widget rendering path. It produces a `Primitive::External` with an `ExternalDrawId`, delegating actual rendering to an externally registered handler (e.g., Terminal). During `build()`, it registers its draw handler into `BuildCx` so the Runtime can call it during encode.
+- **Definition:** A widget that explicitly marks an "escape hatch" from the normal widget rendering path. It produces a `Primitive::External` with an `ExternalDrawId`, delegating actual rendering to an externally registered handler (e.g., Terminal). During `build()`, it registers its draw handler into `BuildCx` so the Runtime can call it during encode. It may receive direct pointer-assigned focus so keyboard input, including Tab, is forwarded externally; however, it is not a Tab/Shift+Tab traversal destination, and Tab does not navigate away while it owns focus.
 - **Synonyms:** External Draw Widget
 - **Relationships:**
   - produces Primitive::External
