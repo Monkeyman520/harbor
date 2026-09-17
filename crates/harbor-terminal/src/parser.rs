@@ -3,6 +3,7 @@
 mod device_attributes;
 mod handlers;
 mod mode_query;
+mod osc133;
 mod osc7;
 mod osc8;
 mod osc_color;

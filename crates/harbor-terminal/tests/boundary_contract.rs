@@ -3,10 +3,10 @@
 //! Imports only public `harbor_terminal` types — no `harbor_widget` dependency.
 
 use harbor_terminal::{
-    Background, CellAttrs, Color, RenderTarget, RenderViewport, Terminal, TerminalAppearance,
-    TerminalEvent, TerminalFocusEvent, TerminalGpuAccess, TerminalKey, TerminalKeyboardEvent,
-    TerminalModifiers, TerminalOutputEvent, TerminalPointerButton, TerminalPointerEvent,
-    TerminalPointerPhase, TextMetrics, alpha_mode_supports_transparency,
+    Background, CellAttrs, Color, RenderTarget, RenderViewport, ShellIntegrationMarker, Terminal,
+    TerminalAppearance, TerminalEvent, TerminalFocusEvent, TerminalGpuAccess, TerminalKey,
+    TerminalKeyboardEvent, TerminalModifiers, TerminalOutputEvent, TerminalPointerButton,
+    TerminalPointerEvent, TerminalPointerPhase, TextMetrics, alpha_mode_supports_transparency,
 };
 
 #[test]
@@ -20,6 +20,22 @@ fn should_expose_structured_working_directory_metadata() {
 
     assert_eq!(metadata.host(), Some("build-host"));
     assert_eq!(metadata.path(), "/C:/work");
+}
+#[test]
+fn should_expose_structured_shell_integration_markers() {
+    let mut terminal = Terminal::new_headless(1, 8);
+    terminal.put_bytes(b"\x1b]133;A\x07");
+    terminal.put_bytes(b"\x1b]133;D;42\x07");
+    let events = terminal.drain_output_events();
+    assert_eq!(
+        events,
+        vec![
+            TerminalOutputEvent::ShellIntegration(ShellIntegrationMarker::PromptStart),
+            TerminalOutputEvent::ShellIntegration(ShellIntegrationMarker::CommandFinished(Some(
+                42
+            ))),
+        ]
+    );
 }
 #[test]
 fn harbor_terminal_manifest_does_not_depend_on_harbor_widget() {

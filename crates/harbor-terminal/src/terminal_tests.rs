@@ -4,10 +4,11 @@ use crate::io::PTY_QUEUE_CAPACITY;
 use crate::screen::CellAttrs;
 use crate::screen::Color;
 use crate::{
-    FrameDemand, InputModes, PasteDisposition, Terminal, TerminalAppearance, TerminalEvent,
-    TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent, TerminalModifiers, TerminalOutputEvent,
-    TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase, TerminalSize,
-    WorkingDirectoryMetadata, safe_preview_line, should_confirm_multiline,
+    FrameDemand, InputModes, PasteDisposition, ShellIntegrationMarker, Terminal,
+    TerminalAppearance, TerminalEvent, TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent,
+    TerminalModifiers, TerminalOutputEvent, TerminalPointerButton, TerminalPointerEvent,
+    TerminalPointerPhase, TerminalSize, WorkingDirectoryMetadata, safe_preview_line,
+    should_confirm_multiline,
 };
 use harbor_config::{Palette, Rgba};
 use std::borrow::Cow;
@@ -683,6 +684,7 @@ fn osc7_reset_and_invalid_sequence_semantics_match_contract() {
             TerminalOutputEvent::WorkingDirectoryReset,
             TerminalOutputEvent::TitleReset,
             TerminalOutputEvent::WorkingDirectoryReset,
+            TerminalOutputEvent::ShellIntegrationReset,
         ]
     );
 }
@@ -728,7 +730,152 @@ fn osc_empty_and_ris_reset_title_and_cwd_but_cancellation_and_decstr_do_not() {
             TerminalOutputEvent::TitleReset,
             TerminalOutputEvent::TitleReset,
             TerminalOutputEvent::WorkingDirectoryReset,
+            TerminalOutputEvent::ShellIntegrationReset,
         ]
+    );
+}
+
+#[test]
+fn osc133_emits_structured_metadata_in_fifo_order_and_drains_once() {
+    let mut terminal = Terminal::new_headless(1, 8);
+
+    terminal.put_bytes(b"\x1b]133;A\x07");
+    terminal.put_bytes(b"\x1b]133;B\x1b\\");
+    terminal.put_bytes(b"\x1b]133;C\x07");
+    terminal.put_bytes(b"\x1b]133;D\x07");
+    terminal.put_bytes(b"\x1b]133;D;0\x07");
+    terminal.put_bytes(b"\x1b]133;D;130\x07");
+    terminal.put_bytes(b"\x1b]133;D;-1\x07");
+    terminal.put_bytes(b"\x1b]133;D;42\x07");
+
+    // Split sequence across input fragments
+    terminal.put_bytes(b"\x1b]133;");
+    terminal.put_bytes(b"D;7");
+    terminal.put_bytes(b"7\x07");
+
+    assert_eq!(
+        terminal.drain_output_events(),
+        vec![
+            TerminalOutputEvent::ShellIntegration(ShellIntegrationMarker::PromptStart),
+            TerminalOutputEvent::ShellIntegration(ShellIntegrationMarker::PromptEnd),
+            TerminalOutputEvent::ShellIntegration(ShellIntegrationMarker::CommandExecuted),
+            TerminalOutputEvent::ShellIntegration(ShellIntegrationMarker::CommandFinished(None)),
+            TerminalOutputEvent::ShellIntegration(ShellIntegrationMarker::CommandFinished(Some(0))),
+            TerminalOutputEvent::ShellIntegration(ShellIntegrationMarker::CommandFinished(Some(
+                130
+            ))),
+            TerminalOutputEvent::ShellIntegration(ShellIntegrationMarker::CommandFinished(Some(
+                -1
+            ))),
+            TerminalOutputEvent::ShellIntegration(ShellIntegrationMarker::CommandFinished(Some(
+                42
+            ))),
+            TerminalOutputEvent::ShellIntegration(ShellIntegrationMarker::CommandFinished(Some(
+                77
+            ))),
+        ]
+    );
+    assert!(terminal.drain_output_events().is_empty());
+}
+
+#[test]
+fn osc133_unknown_subcommands_and_malformed_payloads_are_safely_ignored() {
+    let mut terminal = Terminal::new_headless(1, 8);
+
+    // Unknown subcommands
+    terminal.put_bytes(b"\x1b]133;E\x07");
+    terminal.put_bytes(b"\x1b]133;P;foo=bar\x07");
+    terminal.put_bytes(b"\x1b]133;?\x07");
+    terminal.put_bytes(b"\x1b]133;Afoo\x07");
+    terminal.put_bytes(b"\x1b]133;D_\x07");
+
+    // Unsupported extra arguments or malformed exit codes return None (consume-ignore)
+    terminal.put_bytes(b"\x1b]133;A;cl=m\x07");
+    terminal.put_bytes(b"\x1b]133;D;not_numeric\x07");
+    terminal.put_bytes(b"\x1b]133;D;\x07");
+    terminal.put_bytes(b"\x1b]133;D;0;aid=foo\x07");
+
+    // Plain text after invalid sequence is not corrupted
+    terminal.put_bytes(b"ok");
+
+    assert!(terminal.drain_output_events().is_empty());
+    assert_eq!(terminal.screen().cell(0, 0).ch, 'o');
+    assert_eq!(terminal.screen().cell(0, 1).ch, 'k');
+}
+
+#[test]
+fn osc133_reset_and_cancellation_semantics() {
+    let mut terminal = Terminal::new_headless(1, 8);
+
+    terminal.put_bytes(b"\x1b]133;A\x07");
+    terminal.put_bytes(b"\x1b]133;cancelled\x18");
+    terminal.put_bytes(b"\x1b[!p");
+    terminal.put_bytes(b"\x1b]133;\x07");
+    terminal.put_bytes(b"\x1b]133\x1b\\");
+    terminal.put_bytes(b"\x1bc");
+
+    assert_eq!(
+        terminal.drain_output_events(),
+        vec![
+            TerminalOutputEvent::ShellIntegration(ShellIntegrationMarker::PromptStart),
+            TerminalOutputEvent::ShellIntegrationReset,
+            TerminalOutputEvent::ShellIntegrationReset,
+            TerminalOutputEvent::TitleReset,
+            TerminalOutputEvent::WorkingDirectoryReset,
+            TerminalOutputEvent::ShellIntegrationReset,
+        ]
+    );
+
+    // Recovers cleanly after reset
+    terminal.put_bytes(b"\x1b]133;C\x07");
+    assert_eq!(
+        terminal.drain_output_events(),
+        vec![TerminalOutputEvent::ShellIntegration(
+            ShellIntegrationMarker::CommandExecuted
+        )]
+    );
+}
+
+#[test]
+fn osc133_incomplete_fragmented_terminators_and_oversized_recovery() {
+    let mut terminal = Terminal::new_headless(1, 8);
+
+    // Incomplete sequence across chunk boundaries with split ST (\x1b and \)
+    terminal.put_bytes(b"\x1b]133;B");
+    assert!(terminal.drain_output_events().is_empty());
+    terminal.put_bytes(b"\x1b");
+    assert!(terminal.drain_output_events().is_empty());
+    terminal.put_bytes(b"\\");
+    assert_eq!(
+        terminal.drain_output_events(),
+        vec![TerminalOutputEvent::ShellIntegration(
+            ShellIntegrationMarker::PromptEnd
+        )]
+    );
+
+    // Fragmented BEL
+    terminal.put_bytes(b"\x1b]133;A");
+    assert!(terminal.drain_output_events().is_empty());
+    terminal.put_bytes(b"\x07");
+    assert_eq!(
+        terminal.drain_output_events(),
+        vec![TerminalOutputEvent::ShellIntegration(
+            ShellIntegrationMarker::PromptStart
+        )]
+    );
+
+    // Oversized sequence (> 4096 bytes parser limit)
+    let oversized = format!("\x1b]133;D;{}\x07", "9".repeat(4096));
+    terminal.put_bytes(oversized.as_bytes());
+    assert!(terminal.drain_output_events().is_empty());
+
+    // Clean recovery after oversized payload
+    terminal.put_bytes(b"\x1b]133;C\x07");
+    assert_eq!(
+        terminal.drain_output_events(),
+        vec![TerminalOutputEvent::ShellIntegration(
+            ShellIntegrationMarker::CommandExecuted
+        )]
     );
 }
 

@@ -22,6 +22,29 @@ impl WorkingDirectoryMetadata {
     }
 }
 
+/// Validated, platform-neutral semantic prompt marker reported by OSC 133.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShellIntegrationMarker {
+    /// Prompt start (`OSC 133 ; A`).
+    PromptStart,
+    /// Prompt end / command input start (`OSC 133 ; B`).
+    PromptEnd,
+    /// Command executed / command output start (`OSC 133 ; C`).
+    CommandExecuted,
+    /// Command finished (`OSC 133 ; D [; exit-code]`).
+    CommandFinished(Option<i32>),
+}
+
+impl ShellIntegrationMarker {
+    /// Returns the optional exit code associated with a command finished marker.
+    pub const fn exit_code(&self) -> Option<i32> {
+        match self {
+            Self::CommandFinished(code) => *code,
+            _ => None,
+        }
+    }
+}
+
 /// Host-neutral side effects produced while parsing terminal output.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TerminalOutputEvent {
@@ -29,6 +52,8 @@ pub enum TerminalOutputEvent {
     TitleReset,
     WorkingDirectoryChanged(WorkingDirectoryMetadata),
     WorkingDirectoryReset,
+    ShellIntegration(ShellIntegrationMarker),
+    ShellIntegrationReset,
 }
 
 use harbor_config::{Palette, Rgba};
