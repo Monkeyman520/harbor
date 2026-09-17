@@ -11,7 +11,7 @@ use unicode_width::UnicodeWidthChar;
 
 use super::super::cursor::CursorEngine;
 use super::cell_ops::CellOps;
-use super::pen_state::{PenState, map_dec_graphics};
+use super::pen_state::{PenState, SingleShift, map_dec_graphics};
 
 /// Stateless namespace for writing characters to the grid.
 pub(crate) struct CellWriter;
@@ -19,8 +19,8 @@ pub(crate) struct CellWriter;
 impl CellWriter {
     // ── write_char ────────────────────────────────────────────────
 
-    /// Writes one already-decoded printable character at the cursor and
-    /// advances by its terminal cell width.
+    /// Decodes one parser-delivered printable character, writes it at the
+    /// cursor, and advances by its terminal cell width.
     pub(crate) fn write_char(
         pen_state: &mut PenState,
         normal: &mut NormalBuf,
@@ -29,8 +29,35 @@ impl CellWriter {
     ) {
         // 1. Decode the character through the active charset and measure width.
         let (ch, width) = Self::decode_char(pen_state, ch);
+        if Self::write_decoded_char(pen_state, normal, cursor, ch, width) {
+            pen_state.charsets.last_char = Some(ch);
+        }
+    }
+
+    /// Writes a character produced by an internal screen operation.
+    ///
+    /// Internal writes, such as tab-fill cells and REP output, are already
+    /// resolved display characters. They must not consume a pending SS2/SS3
+    /// invocation or replace the last parser-delivered graphic character.
+    pub(crate) fn write_internal_char(
+        pen_state: &mut PenState,
+        normal: &mut NormalBuf,
+        cursor: &mut CursorEngine,
+        ch: char,
+    ) {
+        let width = UnicodeWidthChar::width(ch).unwrap_or(0).min(2);
+        Self::write_decoded_char(pen_state, normal, cursor, ch, width);
+    }
+
+    fn write_decoded_char(
+        pen_state: &mut PenState,
+        normal: &mut NormalBuf,
+        cursor: &mut CursorEngine,
+        ch: char,
+        width: usize,
+    ) -> bool {
         if width == 0 {
-            return;
+            return false;
         }
 
         let (left_limit, right_limit) = if cursor.margins.enabled {
@@ -48,7 +75,7 @@ impl CellWriter {
             width,
             (left_limit, right_limit),
         ) {
-            return;
+            return false;
         };
 
         // 3. Commit the glyph to the grid.
@@ -63,19 +90,24 @@ impl CellWriter {
 
         // 4. Advance cursor and set pending_wrap.
         Self::advance_cursor(cursor, width, (left_limit, right_limit));
-
-        pen_state.charsets.last_char = Some(ch);
+        true
     }
 
     // ── decomposed helpers ────────────────────────────────────────
 
     /// Decodes a character through the active charset and returns the mapped
     /// character plus its terminal display width (0, 1, or 2).
-    fn decode_char(pen_state: &PenState, ch: char) -> (char, usize) {
-        let active_set = if pen_state.charsets.active == 0 {
-            pen_state.charsets.g0
-        } else {
-            pen_state.charsets.g1
+    fn decode_char(pen_state: &mut PenState, ch: char) -> (char, usize) {
+        let active_set = match pen_state.charsets.single_shift.take() {
+            Some(SingleShift::G2) => pen_state.charsets.g2,
+            Some(SingleShift::G3) => pen_state.charsets.g3,
+            None => {
+                if pen_state.charsets.active == 0 {
+                    pen_state.charsets.g0
+                } else {
+                    pen_state.charsets.g1
+                }
+            }
         };
         let ch = if active_set == b'0' {
             map_dec_graphics(ch)

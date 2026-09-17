@@ -71,6 +71,10 @@ impl TerminalParser {
         }
     }
 
+    pub fn set_c1_enabled(&mut self, enabled: bool) {
+        self.inner.set_c1_enabled(enabled);
+    }
+
     pub(crate) fn drain_output_events(&mut self) -> Vec<TerminalOutputEvent> {
         self.output_events.drain(..).collect()
     }
