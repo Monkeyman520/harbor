@@ -228,3 +228,11 @@
   - depends on TerminalReply
   - references TOML User Settings
   - references Windows Acrylic Backdrop
+
+### OSC 133 Shell-Integration Metadata
+- **Definition:** A bounded, host-visible representation of OSC 133 semantic prompt markers (`A` Prompt Start, `B` Prompt End, `C` Command Executed, `D` Command Finished with optional integer exit code), stored per terminal tab as optional structured metadata without UI chrome or PTY injection. Unknown subcommands are safely consumed and ignored. Empty OSC 133 and RIS reset the metadata.
+- **Synonyms:** Shell integration markers, FinalTerm semantic markers, FTCS markers
+- **Relationships:**
+  - belongs to Terminal
+  - communicates with Application Business Host
+  - depends on Parser Retention Limits

@@ -229,6 +229,7 @@ mod tests {
             unread,
             draw_id: ExternalDrawId::new(id),
             working_directory: None,
+            shell_integration: None,
             active,
         }
     }

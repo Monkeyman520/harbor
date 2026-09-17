@@ -42,9 +42,10 @@ pub use selection_model::{
 use std::io::{Read, Write};
 use std::time::Instant;
 pub use types::{
-    FrameDemand, RenderTarget, TerminalAppearance, TerminalEvent, TerminalEventOutcome,
-    TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent, TerminalModifiers, TerminalOutputEvent,
-    TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase, WorkingDirectoryMetadata,
+    FrameDemand, RenderTarget, ShellIntegrationMarker, TerminalAppearance, TerminalEvent,
+    TerminalEventOutcome, TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent,
+    TerminalModifiers, TerminalOutputEvent, TerminalPointerButton, TerminalPointerEvent,
+    TerminalPointerPhase, WorkingDirectoryMetadata,
 };
 
 /// Stateful terminal engine owning screen state, I/O, and rendering.

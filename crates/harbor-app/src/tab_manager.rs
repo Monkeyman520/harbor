@@ -3,7 +3,9 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result, anyhow};
-use harbor_terminal::{Terminal, TerminalOutputEvent, TerminalSize, WorkingDirectoryMetadata};
+use harbor_terminal::{
+    ShellIntegrationMarker, Terminal, TerminalOutputEvent, TerminalSize, WorkingDirectoryMetadata,
+};
 use harbor_widget::scene::primitive::ExternalDrawId;
 
 use crate::terminal_view::TerminalWidgetBridge;
@@ -87,6 +89,7 @@ struct TerminalTab {
     title: String,
     shell_fallback: String,
     working_directory: Option<WorkingDirectoryMetadata>,
+    shell_integration: Option<ShellIntegrationMarker>,
     unread: bool,
     draw_id: ExternalDrawId,
     terminal: Arc<Mutex<Terminal>>,
@@ -99,6 +102,7 @@ pub struct TabSnapshot {
     pub(crate) id: TabId,
     pub(crate) title: String,
     pub(crate) working_directory: Option<WorkingDirectoryMetadata>,
+    pub(crate) shell_integration: Option<ShellIntegrationMarker>,
     pub(crate) unread: bool,
     pub(crate) draw_id: ExternalDrawId,
     pub(crate) active: bool,
@@ -108,6 +112,11 @@ impl TabSnapshot {
     /// Returns the latest validated OSC 7 metadata retained for this tab.
     pub const fn working_directory(&self) -> Option<&WorkingDirectoryMetadata> {
         self.working_directory.as_ref()
+    }
+
+    /// Returns the latest validated OSC 133 marker retained for this tab.
+    pub const fn shell_integration(&self) -> Option<ShellIntegrationMarker> {
+        self.shell_integration
     }
 }
 
@@ -213,6 +222,7 @@ impl TabManager {
             title,
             shell_fallback: resources.shell_fallback,
             working_directory: None,
+            shell_integration: None,
             unread: false,
             draw_id,
             terminal: resources.terminal,
@@ -265,6 +275,7 @@ impl TabManager {
                 id: tab.id,
                 title: tab.title.clone(),
                 working_directory: tab.working_directory.clone(),
+                shell_integration: tab.shell_integration,
                 unread: tab.unread,
                 draw_id: tab.draw_id,
                 active: self.active == Some(tab.id),
@@ -379,6 +390,7 @@ impl TabManager {
 
         let previous_title = tab.title.clone();
         let previous_working_directory = tab.working_directory.clone();
+        let previous_shell_integration = tab.shell_integration;
         for event in output_events {
             match event {
                 TerminalOutputEvent::TitleChanged(title) => {
@@ -389,9 +401,14 @@ impl TabManager {
                     tab.working_directory = Some(metadata);
                 }
                 TerminalOutputEvent::WorkingDirectoryReset => tab.working_directory = None,
+                TerminalOutputEvent::ShellIntegration(marker) => {
+                    tab.shell_integration = Some(marker);
+                }
+                TerminalOutputEvent::ShellIntegrationReset => tab.shell_integration = None,
             }
         }
-        let metadata_changed = tab.working_directory != previous_working_directory;
+        let metadata_changed = tab.working_directory != previous_working_directory
+            || tab.shell_integration != previous_shell_integration;
         let title_changed = tab.title != previous_title;
         let active = self.active == Some(id);
         if active {
@@ -654,6 +671,77 @@ mod tests {
             manager.process_output(TabId(u64::MAX)),
             TabOutputOutcome::default()
         );
+    }
+
+    #[test]
+    fn shell_integration_metadata_is_retained_per_tab_and_reports_real_changes() {
+        let mut manager = TabManager::new();
+        let (background, _) = create(&mut manager);
+        let (active, _) = create(&mut manager);
+
+        terminal(&manager, background)
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]133;A\x07");
+        let changed = manager.process_output(background);
+        assert!(changed.metadata_changed);
+        assert!(!changed.title_changed);
+        assert!(!changed.active_title_changed);
+        assert!(!changed.request_active_invalidation);
+        let snapshots = manager.snapshots();
+        assert_eq!(
+            snapshots[0].shell_integration(),
+            Some(ShellIntegrationMarker::PromptStart)
+        );
+        assert_eq!(snapshots[1].shell_integration(), None);
+
+        terminal(&manager, background)
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]133;unknown\x07");
+        assert!(!manager.process_output(background).metadata_changed);
+        assert_eq!(
+            manager.snapshots()[0].shell_integration(),
+            Some(ShellIntegrationMarker::PromptStart)
+        );
+
+        // Oversized sequence leaves prior state unchanged
+        let oversized = format!("\x1b]133;D;{}\x07", "9".repeat(4096));
+        terminal(&manager, background)
+            .lock()
+            .unwrap()
+            .put_bytes(oversized.as_bytes());
+        assert!(!manager.process_output(background).metadata_changed);
+        assert_eq!(
+            manager.snapshots()[0].shell_integration(),
+            Some(ShellIntegrationMarker::PromptStart)
+        );
+        terminal(&manager, active)
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]133;D;0\x07");
+        let active_changed = manager.process_output(active);
+        assert!(active_changed.metadata_changed);
+        let snapshots = manager.snapshots();
+        assert_eq!(
+            snapshots[1].shell_integration(),
+            Some(ShellIntegrationMarker::CommandFinished(Some(0)))
+        );
+
+        terminal(&manager, background)
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]133;\x07");
+        assert!(manager.process_output(background).metadata_changed);
+        assert_eq!(manager.snapshots()[0].shell_integration(), None);
+
+        // RIS clears shell integration
+        terminal(&manager, active)
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1bc");
+        assert!(manager.process_output(active).metadata_changed);
+        assert_eq!(manager.snapshots()[1].shell_integration(), None);
     }
 
     #[test]

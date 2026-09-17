@@ -5,6 +5,7 @@ use super::mode_query::ModeQuery;
 use super::osc_color;
 use super::osc7;
 use super::osc8;
+use super::osc133;
 use super::status_strings::DecrqssRequest;
 use super::xtgettcap::XtgettcapRequest;
 use crate::model::{CharacterProtection, CursorStyleArg};
@@ -269,6 +270,8 @@ impl VtHandler for ScreenHandler<'_> {
                     .push_back(TerminalOutputEvent::TitleReset);
                 self.output_events
                     .push_back(TerminalOutputEvent::WorkingDirectoryReset);
+                self.output_events
+                    .push_back(TerminalOutputEvent::ShellIntegrationReset);
             }
             b'D' => {
                 self.screen.index();
@@ -340,6 +343,16 @@ impl VtHandler for ScreenHandler<'_> {
             } else if let Some(metadata) = osc7::parse(payload) {
                 self.output_events
                     .push_back(TerminalOutputEvent::WorkingDirectoryChanged(metadata));
+            }
+            return;
+        }
+        if command == b"133" {
+            if payload.is_empty() {
+                self.output_events
+                    .push_back(TerminalOutputEvent::ShellIntegrationReset);
+            } else if let Some(marker) = osc133::parse(payload) {
+                self.output_events
+                    .push_back(TerminalOutputEvent::ShellIntegration(marker));
             }
             return;
         }

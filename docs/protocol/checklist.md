@@ -998,12 +998,12 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 ### 24.8 Shell Integration
 
-* [ ] `OSC 133 ; A ST`
-* [ ] `OSC 133 ; B ST`
-* [ ] `OSC 133 ; C ST`
-* [ ] `OSC 133 ; D ST`
-* [ ] `OSC 133 ; D ; exit-code ST`
-* [ ] Unknown OSC 133 sub-commands are safely ignored
+* [x] `OSC 133 ; A ST`
+* [x] `OSC 133 ; B ST`
+* [x] `OSC 133 ; C ST`
+* [x] `OSC 133 ; D ST`
+* [x] `OSC 133 ; D ; exit-code ST`
+* [x] Unknown OSC 133 sub-commands are safely ignored
 
 ### 24.9 Notification Extensions
 
@@ -1459,7 +1459,7 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 * [x] OSC 7
 * [x] OSC 8
-* [ ] OSC 133
+* [x] OSC 133
 * [ ] OSC 9/99/777 optional
 * [x] OSC 1337 can be safely ignored
 * [ ] Synchronized Output
