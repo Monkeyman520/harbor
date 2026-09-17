@@ -603,6 +603,22 @@ impl Screen {
         self.pen_state.designate_g1(charset);
     }
 
+    pub fn designate_g2(&mut self, charset: u8) {
+        self.pen_state.designate_g2(charset);
+    }
+
+    pub fn designate_g3(&mut self, charset: u8) {
+        self.pen_state.designate_g3(charset);
+    }
+
+    pub fn single_shift_2(&mut self) {
+        self.pen_state.single_shift_2();
+    }
+
+    pub fn single_shift_3(&mut self) {
+        self.pen_state.single_shift_3();
+    }
+
     pub fn set_active_charset(&mut self, active: u8) {
         self.pen_state.set_active_charset(active);
     }
@@ -838,7 +854,7 @@ impl Screen {
                 ..
             } = self;
             for _ in 0..spaces {
-                CellWriter::write_char(pen_state, normal, cursor, ' ');
+                CellWriter::write_internal_char(pen_state, normal, cursor, ' ');
             }
         }
         self.cursor.clear_pending_wrap();
@@ -909,7 +925,7 @@ impl Screen {
                 ..
             } = self;
             for _ in 0..count {
-                CellWriter::write_char(pen_state, normal, cursor, ch);
+                CellWriter::write_internal_char(pen_state, normal, cursor, ch);
             }
         }
     }

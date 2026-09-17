@@ -135,8 +135,8 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] `NEL`: `ESC E` / `0x85`
 * [x] `HTS`: `ESC H` / `0x88`
 * [x] `RI`: `ESC M` / `0x8D`
-* [ ] `SS2`: `ESC N` / `0x8E`
-* [ ] `SS3`: `ESC O` / `0x8F`
+* [x] `SS2`: `ESC N` / `0x8E`
+* [x] `SS3`: `ESC O` / `0x8F`
 * [x] `DCS`: `ESC P` / `0x90`
 * [x] `SOS`: `ESC X` / `0x98`
 * [x] `CSI`: `ESC [` / `0x9B`
@@ -164,8 +164,8 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [x] `ESC E` — NEL
 * [x] `ESC H` — HTS
 * [x] `ESC M` — RI
-* [ ] `ESC N` — SS2
-* [ ] `ESC O` — SS3
+* [x] `ESC N` — SS2
+* [x] `ESC O` — SS3
 * [ ] `ESC Z` — DECID
 * [x] `ESC c` — RIS
 * [x] `ESC =` — DECKPAM
@@ -201,8 +201,8 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 
 * [x] `ESC ( F` — Designate G0
 * [x] `ESC ) F` — Designate G1
-* [ ] `ESC * F` — Designate G2
-* [ ] `ESC + F` — Designate G3
+* [x] `ESC * F` — Designate G2
+* [x] `ESC + F` — Designate G3
 * [ ] `ESC - F`
 * [ ] `ESC . F`
 * [ ] `ESC / F`
@@ -214,16 +214,16 @@ See [`../validation.md`](../validation.md) for the evidence policy.
 * [ ] `A` — UK
 * [ ] `<` — DEC Supplemental
 * [ ] `U` — DEC Supplemental or compatible character set
-* [ ] Unknown character sets do not corrupt current character set state
+* [x] Unknown character sets do not corrupt current character set state
 
 ### 5.3 Character Set Invocation
 
 * [x] SI invokes G0
 * [x] SO invokes G1
-* [ ] SS2 single-character invokes G2
-* [ ] SS3 single-character invokes G3
-* [ ] Single invocation only affects the next graphic character
-* [ ] Character set state is correctly preserved when saving/restoring cursor
+* [x] SS2 single-character invokes G2
+* [x] SS3 single-character invokes G3
+* [x] Single invocation only affects the next graphic character
+* [x] Character set state is correctly preserved when saving/restoring cursor
 
 ### 5.4 DEC Special Graphics Mapping
 

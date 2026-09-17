@@ -246,6 +246,8 @@ impl VtHandler for ScreenHandler<'_> {
             match (intermediates, byte) {
                 (b"(", charset) => self.screen.designate_g0(charset),
                 (b")", charset) => self.screen.designate_g1(charset),
+                (b"*", charset) => self.screen.designate_g2(charset),
+                (b"+", charset) => self.screen.designate_g3(charset),
                 (b"#", b'8') => self.screen.decaln(),
                 _ => {}
             }
@@ -253,6 +255,12 @@ impl VtHandler for ScreenHandler<'_> {
         }
 
         match byte {
+            b'N' => {
+                self.screen.single_shift_2();
+            }
+            b'O' => {
+                self.screen.single_shift_3();
+            }
             b'c' => {
                 self.screen.reset_display();
                 self.output_events

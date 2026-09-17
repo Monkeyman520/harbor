@@ -33,12 +33,13 @@ impl Pen {
     }
 }
 
-/// Snapshot of pen color + attributes for DECSC/DECRC save/restore.
+/// Snapshot of pen color + attributes + character sets for DECSC/DECRC save/restore.
 #[derive(Debug, Clone, Copy)]
 struct SavedPen {
     fg: Color,
     bg: Color,
     attrs: CellAttrs,
+    charsets: CharacterSets,
 }
 
 /// Horizontal tab stops.  `true` at column `c` means a tab stop is set.
@@ -68,12 +69,20 @@ impl TabStops {
     }
 }
 
-/// Character set state for GL mapping via G0/G1 designation.
+/// Character set single shift target for the immediate next graphic character.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SingleShift {
+    G2,
+    G3,
+}
+
+/// Character set state for GL mapping via G0-G3 designation and SS2/SS3 single-shift.
 ///
-/// `g0` and `g1` hold the final character of the designation escape
+/// `g0`, `g1`, `g2`, and `g3` hold the final character of the designation escape
 /// (e.g. `b'B'` for US-ASCII, `b'0'` for DEC Special Graphics).
 /// `active` selects which set (0 = G0, 1 = G1) maps GL characters.
-#[derive(Debug, Clone, Copy)]
+/// `single_shift` temporarily selects G2 or G3 for the immediate next graphic character.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CharacterSets {
     /// Most recently printed character (used by REP / CSI Ps b).
     pub(crate) last_char: Option<char>,
@@ -81,8 +90,19 @@ pub(crate) struct CharacterSets {
     pub(crate) g0: u8,
     /// G1 character set designation.
     pub(crate) g1: u8,
+    /// G2 character set designation.
+    pub(crate) g2: u8,
+    /// G3 character set designation.
+    pub(crate) g3: u8,
     /// Active charset: 0 = G0, 1 = G1.
     pub(crate) active: u8,
+    /// Pending single-shift invocation (SS2/SS3) for the next graphic character.
+    pub(crate) single_shift: Option<SingleShift>,
+}
+
+#[inline]
+pub(crate) fn is_supported_charset(charset: u8) -> bool {
+    matches!(charset, b'B' | b'0')
 }
 
 impl CharacterSets {
@@ -91,7 +111,10 @@ impl CharacterSets {
             last_char: None,
             g0: b'B',
             g1: b'B',
+            g2: b'B',
+            g3: b'B',
             active: 0,
+            single_shift: None,
         }
     }
 
@@ -99,7 +122,10 @@ impl CharacterSets {
         self.last_char = None;
         self.g0 = b'B';
         self.g1 = b'B';
+        self.g2 = b'B';
+        self.g3 = b'B';
         self.active = 0;
+        self.single_shift = None;
     }
 }
 
@@ -130,11 +156,12 @@ impl PenState {
         self.saved_pen = None;
     }
 
-    /// Soft reset (DECSTR): resets pen and charsets.last_char, but leaves
-    /// tab-stops and G0/G1/active charset designations intact.
+    /// Soft reset (DECSTR): resets pen, charsets.last_char, and charsets.single_shift,
+    /// but leaves tab-stops and G0-G3 / active charset designations intact.
     pub(crate) fn soft_reset(&mut self) {
         self.pen = Pen::reset();
         self.charsets.last_char = None;
+        self.charsets.single_shift = None;
         self.saved_pen = None;
     }
 
@@ -156,15 +183,22 @@ impl PenState {
             fg: self.pen.fg,
             bg: self.pen.bg,
             attrs: self.pen.attrs,
+            charsets: self.charsets,
         });
     }
 
-    /// Restores the saved pen colors + attributes (DECRC).
+    /// Restores the saved pen colors + attributes and character set designations (DECRC).
     pub(crate) fn restore_pen(&mut self) {
         if let Some(saved) = self.saved_pen {
             self.pen.fg = saved.fg;
             self.pen.bg = saved.bg;
             self.pen.attrs = saved.attrs;
+            self.charsets.g0 = saved.charsets.g0;
+            self.charsets.g1 = saved.charsets.g1;
+            self.charsets.g2 = saved.charsets.g2;
+            self.charsets.g3 = saved.charsets.g3;
+            self.charsets.active = saved.charsets.active;
+            self.charsets.single_shift = None;
         }
     }
 
@@ -299,11 +333,35 @@ impl PenState {
     // ── character sets ────────────────────────────────────────────
 
     pub(crate) fn designate_g0(&mut self, charset: u8) {
-        self.charsets.g0 = charset;
+        if is_supported_charset(charset) {
+            self.charsets.g0 = charset;
+        }
     }
 
     pub(crate) fn designate_g1(&mut self, charset: u8) {
-        self.charsets.g1 = charset;
+        if is_supported_charset(charset) {
+            self.charsets.g1 = charset;
+        }
+    }
+
+    pub(crate) fn designate_g2(&mut self, charset: u8) {
+        if is_supported_charset(charset) {
+            self.charsets.g2 = charset;
+        }
+    }
+
+    pub(crate) fn designate_g3(&mut self, charset: u8) {
+        if is_supported_charset(charset) {
+            self.charsets.g3 = charset;
+        }
+    }
+
+    pub(crate) fn single_shift_2(&mut self) {
+        self.charsets.single_shift = Some(SingleShift::G2);
+    }
+
+    pub(crate) fn single_shift_3(&mut self) {
+        self.charsets.single_shift = Some(SingleShift::G3);
     }
 
     pub(crate) fn set_active_charset(&mut self, active: u8) {
