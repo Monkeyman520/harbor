@@ -4,7 +4,7 @@ use crate::io::PTY_QUEUE_CAPACITY;
 use crate::screen::CellAttrs;
 use crate::screen::Color;
 use crate::{
-    FrameDemand, InputModes, PasteDisposition, ShellIntegrationMarker, Terminal,
+    FrameDemand, InputModes, PasteDisposition, Preedit, ShellIntegrationMarker, Terminal,
     TerminalAppearance, TerminalEvent, TerminalFocusEvent, TerminalKey, TerminalKeyboardEvent,
     TerminalModifiers, TerminalOutputEvent, TerminalPointerButton, TerminalPointerEvent,
     TerminalPointerPhase, TerminalSize, WorkingDirectoryMetadata, safe_preview_line,
@@ -2402,6 +2402,109 @@ fn direct_widget_input_writes_all_encoded_bytes() {
         written.lock().unwrap().as_slice(),
         [b"\x03".as_slice(), "語".as_bytes(), b"\x1bx".as_slice()].concat()
     );
+}
+
+#[test]
+fn preedit_replaces_transient_state_without_screen_or_pty_mutation() {
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    terminal.put_str("prompt> ");
+    let before = terminal.snapshot();
+
+    let first = terminal
+        .handle_event_with_outcome(TerminalEvent::Preedit(Preedit::new("ni", Some((2, 2)))))
+        .unwrap();
+    let replacement = terminal
+        .handle_event_with_outcome(TerminalEvent::Preedit(Preedit::new("你", Some((3, 3)))))
+        .unwrap();
+
+    assert!(first.redraw);
+    assert!(replacement.redraw);
+    assert_eq!(terminal.snapshot(), before);
+    assert_eq!(terminal.preedit(), Some(&Preedit::new("你", Some((3, 3)))));
+    assert!(written.lock().unwrap().is_empty());
+}
+
+#[test]
+fn preedit_clears_through_all_paths_without_mutating_terminal_cursor_state() {
+    let reader = ScriptedReader {
+        chunks: std::collections::VecDeque::new(),
+    };
+    let (mut terminal, written, _wake_rx) = terminal_with_io(reader);
+    terminal.put_bytes(b"\x1b[2;3H\x1b[2 q\x1b[?25l");
+    let cursor_state = |terminal: &Terminal| {
+        let snap = terminal.snapshot();
+        (
+            snap.cursor_x,
+            snap.cursor_y,
+            snap.cursor_shape,
+            snap.cursor_blink,
+            snap.cursor_visible,
+        )
+    };
+    let expected_cursor = cursor_state(&terminal);
+
+    terminal
+        .handle_event(TerminalEvent::Preedit(Preedit::new("draft", None)))
+        .unwrap();
+    let cleared = terminal
+        .handle_event_with_outcome(TerminalEvent::Preedit(Preedit::default()))
+        .unwrap();
+    assert!(cleared.redraw);
+    assert!(terminal.preedit().is_none());
+    assert_eq!(cursor_state(&terminal), expected_cursor);
+
+    terminal
+        .handle_event(TerminalEvent::Preedit(Preedit::new("候補", None)))
+        .unwrap();
+    let committed = terminal
+        .handle_event_with_outcome(TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime(
+            "候補".into(),
+        )))
+        .unwrap();
+    assert!(committed.redraw);
+    assert!(terminal.preedit().is_none());
+    assert_eq!(cursor_state(&terminal), expected_cursor);
+    assert_eq!(written.lock().unwrap().as_slice(), "候補".as_bytes());
+
+    terminal
+        .handle_event(TerminalEvent::Preedit(Preedit::new("stale", None)))
+        .unwrap();
+    let lost = terminal
+        .handle_event_with_outcome(TerminalEvent::Focus(TerminalFocusEvent::Lost))
+        .unwrap();
+    assert!(lost.redraw);
+    assert!(terminal.preedit().is_none());
+    assert_eq!(cursor_state(&terminal), expected_cursor);
+
+    terminal
+        .handle_event(TerminalEvent::Preedit(Preedit::new("tab switch", None)))
+        .unwrap();
+    assert!(terminal.clear_preedit());
+    assert!(!terminal.clear_preedit());
+    assert_eq!(cursor_state(&terminal), expected_cursor);
+}
+
+#[test]
+fn first_non_empty_preedit_returns_scrollback_to_live_bottom_without_deleting_history() {
+    let mut terminal = Terminal::new_headless(3, 8);
+    for line in 0..12 {
+        terminal.put_str(&format!("{line}\r\n"));
+    }
+    terminal.scroll_viewport_up(2);
+    let before = terminal.snapshot();
+    assert!(before.view_offset > 0);
+
+    terminal
+        .handle_event(TerminalEvent::Preedit(Preedit::new("x", None)))
+        .unwrap();
+    let after = terminal.snapshot();
+
+    assert_eq!(after.view_offset, 0);
+    assert_eq!(after.scroll_count, before.scroll_count);
+    assert_eq!(after.history_start, before.history_start);
 }
 
 #[test]
