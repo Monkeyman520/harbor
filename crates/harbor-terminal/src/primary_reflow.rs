@@ -8,8 +8,6 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 
-use unicode_width::UnicodeWidthChar;
-
 use crate::content_anchor::{Affinity, ContentAnchor};
 use crate::logical_content::{
     self, DecodeError, LogicalAtomOffset, LogicalGlyph, LogicalLine, SourceSpan,
@@ -114,8 +112,6 @@ pub(crate) struct PreparedPrimaryResize {
     pub(crate) review: PreparedProjection<GenPos>,
 }
 
-#[cfg(test)]
-pub(crate) type PreparedPrimaryWidthReflow = PreparedPrimaryResize;
 impl PreparedPrimaryResize {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn prepare_geometry(
@@ -648,14 +644,14 @@ impl PreparedPrimaryResize {
             let mut col = 0usize;
             let mut atom_count = 0usize;
             while col < row.metadata.meaningful_extent {
-                let cell = row.cells[col];
+                let cell = &row.cells[col];
                 if cell.wide_continuation {
                     return Err(PreparationError::Invariant("orphan projected continuation"));
                 }
                 atom_count = atom_count
                     .checked_add(1)
                     .ok_or(PreparationError::ArithmeticOverflow)?;
-                if UnicodeWidthChar::width(cell.ch).unwrap_or(0) == 2 {
+                if cell.grid_width() == 2 {
                     if col + 1 >= row.metadata.meaningful_extent
                         || !row.cells[col + 1].wide_continuation
                     {
@@ -735,7 +731,7 @@ fn pack_line(
                 "non-monotonic logical atom offset",
             ));
         }
-        let glyph = logical.glyph;
+        let glyph = &logical.glyph;
         validate_glyph(glyph)?;
         let width = usize::from(glyph.width);
         let used = row.metadata.meaningful_extent;
@@ -759,10 +755,10 @@ fn pack_line(
         }
 
         let col = row.metadata.meaningful_extent;
-        row.cells[col] = glyph.cell;
+        row.cells[col] = glyph.cell.clone();
         row.cell_state[col] = glyph.cell_state;
         if width == 2 {
-            row.cells[col + 1] = continuation_cell(glyph.cell);
+            row.cells[col + 1] = continuation_cell(&glyph.cell);
             row.cell_state[col + 1] = glyph
                 .continuation_state
                 .ok_or(PreparationError::Invariant("wide glyph provenance missing"))?;
@@ -787,11 +783,11 @@ fn pack_line(
     Ok(atoms)
 }
 
-fn validate_glyph(glyph: LogicalGlyph) -> Result<(), PreparationError> {
+fn validate_glyph(glyph: &LogicalGlyph) -> Result<(), PreparationError> {
     if !matches!(glyph.width, 1 | 2) {
         return Err(PreparationError::Invariant("unsupported glyph width"));
     }
-    if (glyph.width == 2) != (UnicodeWidthChar::width(glyph.cell.ch).unwrap_or(0) == 2) {
+    if glyph.width != glyph.cell.grid_width() {
         return Err(PreparationError::Invariant(
             "glyph width disagrees with payload",
         ));
@@ -804,9 +800,12 @@ fn validate_glyph(glyph: LogicalGlyph) -> Result<(), PreparationError> {
     Ok(())
 }
 
-fn continuation_cell(base: Cell) -> Cell {
+fn continuation_cell(base: &Cell) -> Cell {
     Cell {
         ch: ' ',
+        suffix: String::new(),
+        width: 0,
+        isolated_mark: false,
         wide_continuation: true,
         fg: base.fg,
         bg: base.bg,
@@ -884,8 +883,8 @@ mod tests {
             hyperlink: Some(hyperlink),
             ..Cell::default()
         };
-        write(&mut normal, 0, 1, wide);
-        write(&mut normal, 0, 2, continuation_cell(wide));
+        write(&mut normal, 0, 1, wide.clone());
+        write(&mut normal, 0, 2, continuation_cell(&wide));
         write(
             &mut normal,
             0,
@@ -896,8 +895,7 @@ mod tests {
             },
         );
 
-        let prepared =
-            PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 1).unwrap();
+        let prepared = PreparedPrimaryResize::prepare_geometry(&normal, normal.rows(), 1).unwrap();
 
         assert_eq!(prepared.cols(), 2);
         assert_eq!(prepared.rows().len(), 3);
@@ -905,7 +903,7 @@ mod tests {
         assert_eq!(prepared.rows()[0].cells[1], Cell::default());
         assert!(!prepared.rows()[0].cell_state[1].is_meaningful());
         assert_eq!(prepared.rows()[1].cells[0], wide);
-        assert_eq!(prepared.rows()[1].cells[1], continuation_cell(wide));
+        assert_eq!(prepared.rows()[1].cells[1], continuation_cell(&wide));
         assert_eq!(prepared.rows()[1].metadata.logical_start, 1);
         assert_eq!(prepared.rows()[2].metadata.logical_start, 3);
         assert!(prepared.rows()[1].metadata.soft_wrapped);
@@ -933,8 +931,7 @@ mod tests {
             write(&mut normal, 0, col, cell);
         }
 
-        let prepared =
-            PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 2).unwrap();
+        let prepared = PreparedPrimaryResize::prepare_geometry(&normal, normal.rows(), 2).unwrap();
 
         assert_eq!(prepared.rows().len(), 2);
         assert_eq!(prepared.rows()[0].cells[1].ch, ' ');
@@ -968,10 +965,8 @@ mod tests {
             },
         );
 
-        let first =
-            PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 2).unwrap();
-        let second =
-            PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 2).unwrap();
+        let first = PreparedPrimaryResize::prepare_geometry(&normal, normal.rows(), 2).unwrap();
+        let second = PreparedPrimaryResize::prepare_geometry(&normal, normal.rows(), 2).unwrap();
 
         assert_eq!(first, second);
         assert_eq!(first.rows().len(), 4);
@@ -1007,9 +1002,8 @@ mod tests {
             .unwrap();
 
         let width_three =
-            PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 3).unwrap();
-        let width_two =
-            PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 2).unwrap();
+            PreparedPrimaryResize::prepare_geometry(&normal, normal.rows(), 3).unwrap();
+        let width_two = PreparedPrimaryResize::prepare_geometry(&normal, normal.rows(), 2).unwrap();
 
         assert_eq!(
             width_three.project_cursor(pending),
@@ -1031,7 +1025,7 @@ mod tests {
         );
     }
 
-    fn logical_payload(prepared: &PreparedPrimaryWidthReflow) -> Vec<(LogicalLineId, Vec<Cell>)> {
+    fn logical_payload(prepared: &PreparedPrimaryResize) -> Vec<(LogicalLineId, Vec<Cell>)> {
         let mut lines: Vec<(LogicalLineId, Vec<Cell>)> = Vec::new();
         for row in prepared.rows() {
             if lines
@@ -1043,7 +1037,7 @@ mod tests {
             let cells = &mut lines.last_mut().unwrap().1;
             for cell in &row.cells[..row.metadata.meaningful_extent] {
                 if !cell.wide_continuation {
-                    cells.push(*cell);
+                    cells.push(cell.clone());
                 }
             }
         }
@@ -1079,15 +1073,14 @@ mod tests {
                 ..Cell::default()
             },
         ];
-        write(&mut normal, 0, 0, cells[0]);
-        write(&mut normal, 0, 1, cells[1]);
-        write(&mut normal, 0, 2, cells[2]);
-        write(&mut normal, 0, 3, continuation_cell(cells[2]));
-        write(&mut normal, 0, 4, cells[3]);
+        write(&mut normal, 0, 0, cells[0].clone());
+        write(&mut normal, 0, 1, cells[1].clone());
+        write(&mut normal, 0, 2, cells[2].clone());
+        write(&mut normal, 0, 3, continuation_cell(&cells[2]));
+        write(&mut normal, 0, 4, cells[3].clone());
 
-        let narrow =
-            PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 3).unwrap();
-        let wide = PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 8).unwrap();
+        let narrow = PreparedPrimaryResize::prepare_geometry(&normal, normal.rows(), 3).unwrap();
+        let wide = PreparedPrimaryResize::prepare_geometry(&normal, normal.rows(), 8).unwrap();
 
         assert_eq!(logical_payload(&narrow), logical_payload(&wide));
         assert_eq!(logical_payload(&wide)[0].1, cells);
@@ -1099,13 +1092,13 @@ mod tests {
     fn zero_width_normalizes_and_unallocatable_width_fails_cleanly() {
         let normal = NormalBuf::new(1, 2);
         assert_eq!(
-            PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 0)
+            PreparedPrimaryResize::prepare_geometry(&normal, normal.rows(), 0)
                 .unwrap()
                 .cols(),
             2
         );
         assert_eq!(
-            PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), usize::MAX,),
+            PreparedPrimaryResize::prepare_geometry(&normal, normal.rows(), usize::MAX,),
             Err(PreparationError::AllocationFailed)
         );
     }
@@ -1337,8 +1330,7 @@ mod tests {
         normal.set_head_truncated(0, true);
         let before = normal.row_metadata(0);
 
-        let prepared =
-            PreparedPrimaryWidthReflow::prepare_geometry(&normal, normal.rows(), 4).unwrap();
+        let prepared = PreparedPrimaryResize::prepare_geometry(&normal, normal.rows(), 4).unwrap();
         assert!(prepared.rows()[0].metadata.head_truncated);
         assert_eq!(normal.row_metadata(0), before);
     }
