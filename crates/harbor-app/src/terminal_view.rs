@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex};
 use harbor_terminal::{
     Preedit, RenderTarget, RenderViewport, Terminal, TerminalEvent, TerminalFocusEvent,
     TerminalGpuAccess, TerminalKey, TerminalKeyboardEvent, TerminalModifiers,
-    TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase, TerminalSize, TextMetrics,
+    TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase, TerminalRenderPipeline,
+    TerminalSize, TextMetrics,
 };
 use harbor_widget::effects::ImeEffect;
 use harbor_widget::input::event::{
@@ -92,6 +93,17 @@ pub(crate) fn dispatch_matched_draw(
         return;
     }
     draw(render_target_from_context(context));
+}
+
+/// Retained frames replay buffers unless their placement no longer matches the engine.
+fn needs_live_projection(
+    mode: ExternalDrawMode,
+    terminal: &Terminal,
+    viewport: RenderViewport,
+    target: RenderTarget,
+    metrics: &TextMetrics,
+) -> bool {
+    mode == ExternalDrawMode::Live || terminal.retained_geometry_changed(viewport, target, metrics)
 }
 
 /// Maps a widget [`UiEvent`] onto the terminal-owned [`TerminalEvent`] vocabulary.
@@ -239,46 +251,81 @@ pub struct TerminalWidgetBridge {
 
 impl TerminalWidgetBridge {
     #[allow(dead_code)]
-    /// Creates a stable bridge that paints and receives input for `terminal`.
+    /// Creates a headless bridge for input/scheduling without a GPU projection.
     pub fn new(
         draw_id: impl Into<ExternalDrawId>,
         terminal: Arc<Mutex<Terminal>>,
         gate_active: Arc<AtomicBool>,
     ) -> Self {
-        Self::new_internal(draw_id.into(), terminal, gate_active, Arc::new(|_| {}))
+        Self::new_internal(
+            draw_id.into(),
+            terminal,
+            None,
+            gate_active,
+            Arc::new(|_| {}),
+        )
     }
 
-    /// Creates a bridge with a Host-owned OSC 8 activation callback.
-    pub fn new_with_hyperlink_activation(
+    /// Product bridge with one concrete GPU projection for this session.
+    /// The widget clones only share this renderer; they never own another session.
+    pub fn new_rendered_with_hyperlink_activation(
         draw_id: impl Into<ExternalDrawId>,
         terminal: Arc<Mutex<Terminal>>,
+        renderer: TerminalRenderPipeline,
         gate_active: Arc<AtomicBool>,
         activate_hyperlink: Arc<dyn Fn(String) + Send + Sync>,
     ) -> Self {
-        Self::new_internal(draw_id.into(), terminal, gate_active, activate_hyperlink)
+        #[allow(clippy::arc_with_non_send_sync)]
+        let renderer = Arc::new(Mutex::new(renderer));
+        Self::new_internal(
+            draw_id.into(),
+            terminal,
+            Some(renderer),
+            gate_active,
+            activate_hyperlink,
+        )
     }
 
     fn new_internal(
         draw_id: ExternalDrawId,
         terminal: Arc<Mutex<Terminal>>,
+        renderer: Option<Arc<Mutex<TerminalRenderPipeline>>>,
         gate_active: Arc<AtomicBool>,
         activate_hyperlink: Arc<dyn Fn(String) + Send + Sync>,
     ) -> Self {
         let draw_terminal = Arc::clone(&terminal);
-        // ExternalDrawFn is Arc-typed; the closure captures only the UI-thread Terminal.
+        let draw_renderer = renderer.clone();
+        // ExternalDrawFn is UI-thread local; both resources have this tab's lifetime.
         #[allow(clippy::arc_with_non_send_sync)]
         let handler: Arc<ExternalDrawFn<'static>> =
             Arc::new(move |id, context, external_gpu, pass, mode| {
                 dispatch_matched_draw(draw_id, id, context, |target| {
+                    let Some(renderer) = &draw_renderer else {
+                        // Headless bridges used by tests and the HMR host have no GPU projection.
+                        return;
+                    };
                     if let Ok(mut term) = draw_terminal.lock() {
+                        let Ok(mut renderer) = renderer.lock() else {
+                            return;
+                        };
                         let gpu = TerminalGpuAccess::new(
                             external_gpu.device(),
                             external_gpu.queue(),
                             external_gpu.target_format(),
                         );
-                        match mode {
-                            ExternalDrawMode::Live => term.render(target, pass, gpu),
-                            ExternalDrawMode::Retain => term.draw_retained(target, pass, gpu),
+                        let metrics = *renderer.metrics();
+                        if needs_live_projection(mode, &term, renderer.viewport(), target, &metrics)
+                        {
+                            let now = std::time::Instant::now();
+                            let (viewport, grid_changed) =
+                                term.prepare_render_frame(target, &metrics, now);
+                            let update = term.read_update(now);
+                            renderer.sync_viewport(viewport, grid_changed);
+                            renderer.prepare(gpu, &update, term.blink_visible_at(now));
+                            renderer.draw(pass);
+                            term.acknowledge_update(&update);
+                        } else {
+                            renderer.draw(pass);
                         }
                     }
                 });
@@ -291,6 +338,7 @@ impl TerminalWidgetBridge {
         });
 
         let ime_terminal = Arc::clone(&terminal);
+        let ime_renderer = renderer.clone();
         #[allow(clippy::arc_with_non_send_sync)]
         let ime: Arc<ExternalImeFn> = Arc::new(move |id, context| {
             if id != draw_id {
@@ -298,9 +346,12 @@ impl TerminalWidgetBridge {
             }
             let target = render_target_from_context(context);
             let mut effect = ImeEffect::set_allowed(true);
-            if let Ok(term) = ime_terminal.lock()
-                && let Some((x, y)) = term.ime_candidate_position(target)
-            {
+            let position = ime_renderer.as_ref().and_then(|renderer| {
+                let term = ime_terminal.lock().ok()?;
+                let renderer = renderer.lock().ok()?;
+                term.ime_candidate_position_with_metrics(target, renderer.metrics())
+            });
+            if let Some((x, y)) = position {
                 effect.position =
                     Some(Point::new(x / target.scale_factor, y / target.scale_factor));
             }
@@ -489,6 +540,215 @@ mod tests {
             strikethrough_position: 10.0,
             strikethrough_thickness: 2.0,
         }
+    }
+
+    #[test]
+    fn skipped_widget_frame_preserves_update_until_live_projection_and_rechecks_dpi() {
+        let now = std::time::Instant::now();
+        let metrics = metrics();
+        let target = RenderTarget::new((0.0, 0.0), (100, 40), (100, 40));
+        let viewport = RenderViewport::from_target(target, &metrics);
+        let size = viewport.compute_grid_size();
+        let mut terminal = Terminal::new_headless(size.rows, size.cols);
+        assert!(terminal.acknowledge_update(&terminal.read_update(now)));
+        terminal.process_output(b"hi");
+        assert!(!needs_live_projection(
+            ExternalDrawMode::Retain,
+            &terminal,
+            viewport,
+            target,
+            &metrics,
+        ));
+        assert_eq!(terminal.read_update(now).snapshot.cell_char(0, 0), 'h');
+        assert!(!terminal.read_update(now).snapshot.dirty_ranges.is_empty());
+        assert!(needs_live_projection(
+            ExternalDrawMode::Live,
+            &terminal,
+            viewport,
+            target,
+            &metrics,
+        ));
+        let scale_only = RenderTarget::new_with_scale((0.0, 0.0), (100, 40), (100, 40), 2.0);
+        assert!(needs_live_projection(
+            ExternalDrawMode::Retain,
+            &terminal,
+            viewport,
+            scale_only,
+            &metrics,
+        ));
+        let (same_viewport, changed) = terminal.prepare_render_frame(scale_only, &metrics, now);
+        assert!(!changed);
+        assert_eq!(same_viewport, viewport);
+        assert!(!needs_live_projection(
+            ExternalDrawMode::Retain,
+            &terminal,
+            viewport,
+            scale_only,
+            &metrics,
+        ));
+        let dpi_target = RenderTarget::new_with_scale((0.0, 0.0), (200, 80), (200, 80), 2.0);
+        assert!(needs_live_projection(
+            ExternalDrawMode::Retain,
+            &terminal,
+            viewport,
+            dpi_target,
+            &metrics,
+        ));
+        let (new_viewport, _) = terminal.prepare_render_frame(dpi_target, &metrics, now);
+        assert!(terminal.acknowledge_update(&terminal.read_update(now)));
+        assert!(!needs_live_projection(
+            ExternalDrawMode::Retain,
+            &terminal,
+            new_viewport,
+            dpi_target,
+            &metrics,
+        ));
+    }
+
+    #[test]
+    fn rendered_bridge_replays_hidden_output_and_retained_resize_after_skipped_frames() {
+        use harbor_widget::scene::primitive::ExternalDrawGpu;
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let Ok(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+                apply_limit_buckets: false,
+            }))
+        else {
+            eprintln!("SKIP: no GPU adapter for rendered terminal bridge test");
+            return;
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("terminal bridge test"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::default(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            trace: wgpu::Trace::Off,
+        }))
+        .expect("test GPU device");
+        let format = wgpu::TextureFormat::Bgra8Unorm;
+        let gpu = TerminalGpuAccess::new(&device, &queue, format);
+        let fonts = harbor_terminal::load_system_fonts(&harbor_config::FontSettings::default())
+            .expect("test system fonts");
+        let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
+        let terminal = headless_terminal(4, 8);
+        let renderer = TerminalRenderPipeline::new(
+            gpu,
+            (160, 120),
+            fonts,
+            metrics,
+            &terminal
+                .lock()
+                .unwrap()
+                .read_update(std::time::Instant::now()),
+        )
+        .expect("terminal renderer");
+        let weak = Arc::downgrade(&terminal);
+        let bridge = TerminalWidgetBridge::new_rendered_with_hyperlink_activation(
+            73,
+            Arc::clone(&terminal),
+            renderer,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(|_| {}),
+        );
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("terminal bridge target"),
+            size: wgpu::Extent3d {
+                width: 256,
+                height: 256,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let initial = context(
+            Rect::from_min_size(Point::ZERO, Size::new(160.0, 120.0)),
+            (256, 256),
+            1.0,
+        );
+        let resized = context(
+            Rect::from_min_size(Point::ZERO, Size::new(192.0, 128.0)),
+            (256, 256),
+            1.0,
+        );
+        let draw = |ctx: &ExternalDrawContext, id: u64, mode| {
+            let mut encoder =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("terminal bridge pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                    multiview_mask: None,
+                });
+                (bridge.handler)(
+                    id.into(),
+                    ctx,
+                    ExternalDrawGpu::new(&device, &queue, format),
+                    &mut pass,
+                    mode,
+                );
+            }
+            queue.submit([encoder.finish()]);
+        };
+        draw(&initial, 73, ExternalDrawMode::Live);
+        terminal
+            .lock()
+            .unwrap()
+            .handle_event(TerminalEvent::Preedit(Preedit::new("x", None)))
+            .unwrap();
+        assert!(
+            (bridge.ime)(73.into(), &initial)
+                .unwrap()
+                .position
+                .is_some()
+        );
+        assert!((bridge.ime)(99.into(), &initial).is_none());
+        terminal.lock().unwrap().clear_preedit();
+        terminal.lock().unwrap().process_output(b"hidden");
+        draw(&initial, 73, ExternalDrawMode::Retain);
+        draw(&initial, 99, ExternalDrawMode::Live);
+        assert!(!terminal.lock().unwrap().snapshot().dirty_ranges.is_empty());
+        draw(&initial, 73, ExternalDrawMode::Live);
+        assert!(terminal.lock().unwrap().snapshot().dirty_ranges.is_empty());
+        let scaled = context(
+            Rect::from_min_size(Point::ZERO, Size::new(80.0, 60.0)),
+            (256, 256),
+            2.0,
+        );
+        terminal.lock().unwrap().process_output(b"dpi");
+        draw(&scaled, 73, ExternalDrawMode::Retain);
+        assert!(terminal.lock().unwrap().snapshot().dirty_ranges.is_empty());
+        draw(&resized, 73, ExternalDrawMode::Retain);
+        let expected = RenderViewport::from_target(render_target_from_context(&resized), &metrics)
+            .compute_grid_size();
+        let snapshot = terminal.lock().unwrap().snapshot();
+        assert_eq!(
+            (snapshot.rows, snapshot.cols),
+            (expected.rows, expected.cols)
+        );
+        assert!(snapshot.dirty_ranges.is_empty());
+        drop(bridge);
+        drop(terminal);
+        assert!(weak.upgrade().is_none());
     }
 
     #[allow(clippy::arc_with_non_send_sync)]
@@ -971,7 +1231,7 @@ mod tests {
 
     #[test]
     fn should_map_headless_frame_demand_to_empty_schedule_demand() {
-        // Arrange — headless Terminal has no Cursor/renderer
+        // Arrange — headless engine still owns cursor blink timing.
         let terminal = headless_terminal(2, 4);
         let now = std::time::Instant::now();
 
@@ -979,7 +1239,8 @@ mod tests {
         let demand = schedule_demand_for_terminal(1, 1, &terminal, now);
 
         // Assert
-        assert_eq!(demand, ExternalScheduleDemand::empty());
+        assert!(!demand.redraw_now);
+        assert!(demand.deadline.is_some());
         assert!(demand.ordinary_present_eligible);
     }
 
@@ -1038,10 +1299,13 @@ mod tests {
         let _ = rt.update(now);
         let idle = rt.update(now + Duration::from_millis(1));
 
-        // Assert — headless demand yields no WaitUntil / no blink Poll
+        // Assert — blink timing is scheduled even for a headless engine.
         assert!(!idle.request_redraw);
         assert_ne!(idle.control_flow, Some(ControlFlowEffect::Poll));
-        assert!(idle.control_flow.is_none() || idle.control_flow == Some(ControlFlowEffect::Wait));
+        assert!(matches!(
+            idle.control_flow,
+            Some(ControlFlowEffect::WaitUntil(_))
+        ));
     }
 
     #[test]
@@ -1137,7 +1401,10 @@ mod tests {
         assert!(due.request_redraw);
         assert!(due.force_present);
         assert!(due.has_deferred_externals);
-        assert_eq!(due.control_flow, Some(ControlFlowEffect::Wait));
+        assert!(matches!(
+            due.control_flow,
+            Some(ControlFlowEffect::WaitUntil(_))
+        ));
         assert!(
             !terminal
                 .lock()

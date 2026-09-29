@@ -864,6 +864,7 @@ dependencies = [
  "harbor-config",
  "harbor-terminal",
  "harbor-widget",
+ "pollster",
  "tracing",
  "wgpu",
 ]
@@ -914,6 +915,7 @@ dependencies = [
  "harbor-pty",
  "harbor-text",
  "icu_properties",
+ "pollster",
  "proptest",
  "tracing",
  "unicode-width",
