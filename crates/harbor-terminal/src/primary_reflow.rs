@@ -1,8 +1,8 @@
 //! Detached primary-screen geometry reflow.
 //!
 //! Preparation decodes retained logical content, repacks width, establishes the
-//! target-height live suffix, evicts exact capacity overflow, assigns a fresh
-//! generation epoch, and materializes an owned `NormalBuf` without mutating the source.
+//! live viewport according to the producer's history policy, evicts capacity
+//! overflow, and materializes an owned `NormalBuf` in a fresh generation epoch.
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -17,6 +17,15 @@ use crate::screen::Cell;
 use crate::selection_model::GenPos;
 
 const MIN_REFLOW_COLS: usize = 2;
+
+/// Which rows the producer includes in its own resize calculations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ReflowViewport {
+    /// Reclaim retained history when the reflowed content fits.
+    PullHistory,
+    /// ConPTY has no scrollback: reflow its live rows independently of history.
+    PreserveLiveTop,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ReflowPosition {
@@ -87,6 +96,13 @@ struct ReflowedAtom {
     end_col: usize,
 }
 
+/// Primary reflow keeps ordinary tail spaces through cursor insertion points.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CursorRetention {
+    Position(GenPos),
+    Anchor(ContentAnchor),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ReflowedLine {
     source_generations: Vec<u64>,
@@ -128,6 +144,24 @@ impl PreparedPrimaryResize {
         requested_cols: usize,
         cursor_floor: Option<usize>,
     ) -> Result<Self, PreparationError> {
+        Self::prepare_geometry_with_viewport(
+            normal,
+            requested_rows,
+            requested_cols,
+            cursor_floor,
+            ReflowViewport::PullHistory,
+            &[],
+        )
+    }
+
+    pub(crate) fn prepare_geometry_with_viewport(
+        normal: &NormalBuf,
+        requested_rows: usize,
+        requested_cols: usize,
+        cursor_floor: Option<usize>,
+        viewport: ReflowViewport,
+        retained_cursors: &[CursorRetention],
+    ) -> Result<Self, PreparationError> {
         let target_rows = requested_rows.max(1);
         let cols = requested_cols.max(MIN_REFLOW_COLS);
         let active_count = normal.active_retained_row_count(cursor_floor);
@@ -146,9 +180,51 @@ impl PreparedPrimaryResize {
             .try_reserve(logical_lines.len())
             .map_err(|_| PreparationError::AllocationFailed)?;
 
+        let source_live_top = normal
+            .history_start()
+            .checked_add(
+                u64::try_from(normal.scroll_count())
+                    .map_err(|_| PreparationError::ArithmeticOverflow)?,
+            )
+            .ok_or(PreparationError::ArithmeticOverflow)?;
+        let live_boundary =
+            (viewport == ReflowViewport::PreserveLiveTop).then_some(source_live_top);
+
         for line in logical_lines {
             let first_row = rows.len();
-            let atoms = pack_line(&line, cols, &mut rows)?;
+            let atoms = pack_line(&line, cols, live_boundary, retained_cursors, &mut rows)?;
+            // ConPTY's first live row can belong to a history-spanning logical
+            // line with no retained atoms in that row. Keep its empty physical
+            // boundary row so history cannot be pulled into the producer viewport.
+            if live_boundary.is_some_and(|top| {
+                line.generations.contains(&top)
+                    && line.generations.iter().any(|&generation| generation < top)
+                    && atoms.iter().all(|atom| atom.source_span.generation < top)
+            }) {
+                let last = rows.last().ok_or(PreparationError::Invariant(
+                    "missing history row at live boundary",
+                ))?;
+                let logical_start = last
+                    .metadata
+                    .logical_start
+                    .checked_add(last.metadata.meaningful_extent)
+                    .ok_or(PreparationError::ArithmeticOverflow)?;
+                let atom_start = line
+                    .atom_start
+                    .0
+                    .checked_add(atoms.len())
+                    .ok_or(PreparationError::ArithmeticOverflow)?;
+                rows.try_reserve(1)
+                    .map_err(|_| PreparationError::AllocationFailed)?;
+                rows.push(ReflowedRow::blank(
+                    cols,
+                    line.line_id,
+                    logical_start,
+                    atom_start,
+                    true,
+                    false,
+                )?);
+            }
             let line_id = line.line_id;
             let atom_start = line.atom_start;
             let source_generations = line.generations;
@@ -177,19 +253,44 @@ impl PreparedPrimaryResize {
             }
         }
 
-        // `active_retained_row_count` already removes unwritten blank rows below
-        // the cursor before logical lines are decoded. After reflow, restore only
-        // the rows needed to fill the viewport. Keeping the visible region as the
-        // final `target_rows` rows provides bottom gravity when widening and avoids
-        // turning temporary narrow-width wraps into permanent scrollback.
-        let blank_count = target_rows.saturating_sub(rows.len());
+        // Preserve ConPTY's live/history boundary even when it splits a logical
+        // line. Pulling history into newly available space would put our cursor
+        // on a different row from the producer's next absolute cursor command.
+        let live_top = if viewport == ReflowViewport::PreserveLiveTop {
+            lines
+                .values()
+                .find_map(|line| {
+                    line.source_generations.contains(&source_live_top).then(|| {
+                        line.atoms
+                            .iter()
+                            .find(|atom| atom.source_span.generation >= source_live_top)
+                            // No retained live atom: the final row is the empty
+                            // boundary row, not the historical start of the line.
+                            .map_or(line.first_row + line.row_count - 1, |atom| {
+                                atom.source_position.row
+                            })
+                    })
+                })
+                .ok_or(PreparationError::Invariant(
+                    "source live viewport is missing",
+                ))?
+        } else {
+            0
+        };
+        // Only unwritten rows below active content are filled; history remains
+        // available for scrolling, selection and copy in either policy.
+        let blank_count = target_rows.saturating_sub(rows.len() - live_top);
         rows.try_reserve_exact(blank_count)
             .map_err(|_| PreparationError::AllocationFailed)?;
         lines
             .try_reserve(blank_count)
             .map_err(|_| PreparationError::AllocationFailed)?;
         let mut next_logical_line_id = normal.next_logical_line_id();
-        while rows.len() < target_rows {
+        let filled_rows = rows
+            .len()
+            .checked_add(blank_count)
+            .ok_or(PreparationError::ArithmeticOverflow)?;
+        while rows.len() < filled_rows {
             let line_id = LogicalLineId(next_logical_line_id);
             next_logical_line_id = next_logical_line_id
                 .checked_add(1)
@@ -700,9 +801,48 @@ impl PreparedPrimaryResize {
     }
 }
 
+/// Only explicit, undecorated spaces at the *logical* end are disposable.
+fn retained_glyph_count(line: &LogicalLine, cursors: &[CursorRetention]) -> usize {
+    let visible_end = line
+        .glyphs
+        .iter()
+        .rposition(|logical| {
+            logical.glyph.cell != Cell::default() || !logical.glyph.cell_state.is_explicit()
+        })
+        .map_or(0, |index| index + 1);
+    // Keep the atom under each cursor as well as its preceding spaces, so a
+    // "before" anchor still has an on-grid position after narrowing.
+    cursors.iter().fold(visible_end, |end, cursor| {
+        let needed = match cursor {
+            CursorRetention::Position(position)
+                if line.generations.contains(&position.generation) =>
+            {
+                line.glyphs
+                    .iter()
+                    .position(|logical| {
+                        logical.source_span.generation > position.generation
+                            || (logical.source_span.generation == position.generation
+                                && logical.source_span.end_col >= position.col)
+                    })
+                    .map_or(line.glyphs.len(), |index| index + 1)
+            }
+            CursorRetention::Anchor(anchor) if anchor.line_id == line.line_id => anchor
+                .offset
+                .0
+                .saturating_sub(line.atom_start.0)
+                .saturating_add(1)
+                .min(line.glyphs.len()),
+            _ => 0,
+        };
+        end.max(needed)
+    })
+}
+
 fn pack_line(
     line: &LogicalLine,
     cols: usize,
+    live_boundary: Option<u64>,
+    retained_cursors: &[CursorRetention],
     output: &mut Vec<ReflowedRow>,
 ) -> Result<Vec<ReflowedAtom>, PreparationError> {
     let mut logical_start = line.cell_start;
@@ -716,11 +856,12 @@ fn pack_line(
         line.head_truncated,
     )?;
     let mut atoms = Vec::new();
+    let retained_count = retained_glyph_count(line, retained_cursors);
     atoms
-        .try_reserve_exact(line.glyphs.len())
+        .try_reserve_exact(retained_count)
         .map_err(|_| PreparationError::AllocationFailed)?;
 
-    for logical in &line.glyphs {
+    for logical in line.glyphs.iter().take(retained_count) {
         let expected_offset = line
             .atom_start
             .0
@@ -738,7 +879,13 @@ fn pack_line(
         let remaining = cols
             .checked_sub(used)
             .ok_or(PreparationError::ArithmeticOverflow)?;
-        if width > remaining {
+        let starts_live_viewport = live_boundary.is_some_and(|top| {
+            logical.source_span.generation == top
+                && atoms
+                    .last()
+                    .is_some_and(|atom: &ReflowedAtom| atom.source_span.generation < top)
+        });
+        if width > remaining || starts_live_viewport {
             logical_start = logical_start
                 .checked_add(row.metadata.meaningful_extent)
                 .ok_or(PreparationError::ArithmeticOverflow)?;
