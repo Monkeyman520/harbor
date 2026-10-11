@@ -297,8 +297,8 @@ impl TerminalWidgetBridge {
         let draw_renderer = renderer.clone();
         // ExternalDrawFn is UI-thread local; both resources have this tab's lifetime.
         #[allow(clippy::arc_with_non_send_sync)]
-        let handler: Arc<ExternalDrawFn<'static>> =
-            Arc::new(move |id, context, external_gpu, pass, mode| {
+        let handler: Arc<ExternalDrawFn<'static>> = Arc::new(
+            move |id, context, external_gpu, pass, mode| {
                 dispatch_matched_draw(draw_id, id, context, |target| {
                     let Some(renderer) = &draw_renderer else {
                         // Headless bridges used by tests and the HMR host have no GPU projection.
@@ -313,6 +313,21 @@ impl TerminalWidgetBridge {
                             external_gpu.queue(),
                             external_gpu.target_format(),
                         );
+                        if renderer.raster_scale() != target.scale_factor {
+                            let resource_update = term.read_update(std::time::Instant::now());
+                            match renderer.sync_raster_scale(
+                                gpu,
+                                target.scale_factor,
+                                &resource_update,
+                            ) {
+                                Ok(true) => term.invalidate_update(),
+                                Ok(false) => {}
+                                Err(error) => {
+                                    tracing::warn!(%error, "terminal DPI resource preparation failed; update retained");
+                                    return;
+                                }
+                            }
+                        }
                         let metrics = *renderer.metrics();
                         if needs_live_projection(mode, &term, renderer.viewport(), target, &metrics)
                         {
@@ -329,7 +344,8 @@ impl TerminalWidgetBridge {
                         }
                     }
                 });
-            });
+            },
+        );
 
         let schedule_terminal = Arc::clone(&terminal);
         #[allow(clippy::arc_with_non_send_sync)]
@@ -737,6 +753,15 @@ mod tests {
         terminal.lock().unwrap().process_output(b"dpi");
         draw(&scaled, 73, ExternalDrawMode::Retain);
         assert!(terminal.lock().unwrap().snapshot().dirty_ranges.is_empty());
+        let expected_scaled =
+            RenderViewport::from_target(render_target_from_context(&scaled), &metrics)
+                .compute_grid_size();
+        let scaled_snapshot = terminal.lock().unwrap().snapshot();
+        assert_eq!(
+            (scaled_snapshot.rows, scaled_snapshot.cols),
+            (expected_scaled.rows, expected_scaled.cols),
+            "host DPI must preserve main's physical font metrics"
+        );
         draw(&resized, 73, ExternalDrawMode::Retain);
         let expected = RenderViewport::from_target(render_target_from_context(&resized), &metrics)
             .compute_grid_size();
@@ -746,6 +771,35 @@ mod tests {
             (expected.rows, expected.cols)
         );
         assert!(snapshot.dirty_ranges.is_empty());
+        // The product coordinator broadcasts sizes using startup metrics before the
+        // bridge draws. Both phases must agree, including after a skipped draw/DPI change.
+        for scale in [1.0, 1.25, 1.5, 2.0, 1.5, 1.0] {
+            for (width, height) in [(80.0, 60.0), (96.0, 64.0), (80.0, 60.0)] {
+                let rect = Rect::from_min_size(Point::ZERO, Size::new(width, height));
+                let ctx = context(rect, (256, 256), scale);
+                let size = terminal_size_from_allocation(rect, scale, (256, 256), &metrics)
+                    .expect("drawable allocation");
+                terminal
+                    .lock()
+                    .unwrap()
+                    .try_resize_if_changed(size)
+                    .unwrap();
+                let before_draw = terminal.lock().unwrap().snapshot();
+                draw(&ctx, 99, ExternalDrawMode::Live); // unmatched/skipped frame
+                draw(&ctx, 73, ExternalDrawMode::Retain);
+                let after_draw = terminal.lock().unwrap().snapshot();
+                assert_eq!(
+                    (after_draw.rows, after_draw.cols),
+                    (size.rows, size.cols),
+                    "allocation and drawing disagree at scale {scale}"
+                );
+                assert_eq!(
+                    after_draw.cells, before_draw.cells,
+                    "draw must not reflow again"
+                );
+                assert!(after_draw.dirty_ranges.is_empty());
+            }
+        }
         drop(bridge);
         drop(terminal);
         assert!(weak.upgrade().is_none());
