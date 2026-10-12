@@ -335,8 +335,14 @@ impl TerminalWidgetBridge {
                             let (viewport, grid_changed) =
                                 term.prepare_render_frame(target, &metrics, now);
                             let update = term.read_update(now);
-                            renderer.sync_viewport(viewport, grid_changed);
-                            renderer.prepare(gpu, &update, term.blink_visible_at(now));
+                            if !renderer.sync_viewport(viewport, grid_changed)
+                                || !renderer.prepare(gpu, &update, term.blink_visible_at(now))
+                            {
+                                tracing::warn!(
+                                    "terminal projection preparation rejected; update retained"
+                                );
+                                return;
+                            }
                             renderer.draw(pass);
                             term.acknowledge_update(&update);
                         } else {
@@ -623,6 +629,18 @@ mod tests {
 
     #[test]
     fn rendered_bridge_replays_hidden_output_and_retained_resize_after_skipped_frames() {
+        assert_rendered_bridge_replays_hidden_output_and_retained_resize(None);
+        // Exercise the geometry that previously exposed styled scroll-fill tails
+        // on CI, independently of the machine's selected system font.
+        assert_rendered_bridge_replays_hidden_output_and_retained_resize(Some(TextMetrics {
+            line_height: 30.0,
+            ..metrics()
+        }));
+    }
+
+    fn assert_rendered_bridge_replays_hidden_output_and_retained_resize(
+        geometry_metrics: Option<TextMetrics>,
+    ) {
         use harbor_widget::scene::primitive::ExternalDrawGpu;
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let Ok(adapter) =
@@ -649,7 +667,8 @@ mod tests {
         let gpu = TerminalGpuAccess::new(&device, &queue, format);
         let fonts = harbor_terminal::load_system_fonts(&harbor_config::FontSettings::default())
             .expect("test system fonts");
-        let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
+        let metrics = geometry_metrics
+            .unwrap_or_else(|| TextMetrics::from_font_metrics(fonts.font_metrics()));
         let terminal = headless_terminal(4, 8);
         let renderer = TerminalRenderPipeline::new(
             gpu,
@@ -745,6 +764,36 @@ mod tests {
         assert!(!terminal.lock().unwrap().snapshot().dirty_ranges.is_empty());
         draw(&initial, 73, ExternalDrawMode::Live);
         assert!(terminal.lock().unwrap().snapshot().dirty_ranges.is_empty());
+        // Rejected targets must not acknowledge damage. Recovery consumes it
+        // only after the renderer accepts the viewport and prepares every layer.
+        for rejected in [
+            context(
+                Rect::from_min_size(Point::ZERO, Size::new(0.0, 120.0)),
+                (256, 256),
+                1.0,
+            ),
+            context(
+                Rect::from_min_size(Point::ZERO, Size::new(160.0, 120.0)),
+                (0, 256),
+                1.0,
+            ),
+        ] {
+            terminal
+                .lock()
+                .unwrap()
+                .process_output(b"\x1b[4;9;53mrejected");
+            draw(&rejected, 73, ExternalDrawMode::Live);
+            assert!(!terminal.lock().unwrap().snapshot().dirty_ranges.is_empty());
+            draw(&initial, 73, ExternalDrawMode::Live);
+            assert!(terminal.lock().unwrap().snapshot().dirty_ranges.is_empty());
+        }
+        // The remaining checks exercise successful resize/draw coordination, not
+        // the model's rejection of a cursor pushed into history. Styled scroll
+        // fills can leave meaningful blanks after the cursor; at tiny font-
+        // dependent grids those blanks wrap below it and make a shrink invalid.
+        // Reset the pen and erase only that suffix, preserving the printed text
+        // and its decorations already exercised by the rejected-target checks.
+        terminal.lock().unwrap().process_output(b"\x1b[0m\x1b[0J");
         let scaled = context(
             Rect::from_min_size(Point::ZERO, Size::new(80.0, 60.0)),
             (256, 256),
