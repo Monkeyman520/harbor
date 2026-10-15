@@ -103,7 +103,9 @@ fn needs_live_projection(
     target: RenderTarget,
     metrics: &TextMetrics,
 ) -> bool {
-    mode == ExternalDrawMode::Live || terminal.retained_geometry_changed(viewport, target, metrics)
+    mode == ExternalDrawMode::Live
+        || terminal.projection_requires_full_update()
+        || terminal.retained_geometry_changed(viewport, target, metrics)
 }
 
 /// Maps a widget [`UiEvent`] onto the terminal-owned [`TerminalEvent`] vocabulary.
@@ -247,11 +249,16 @@ pub struct TerminalWidgetBridge {
     ime: Arc<ExternalImeFn>,
     on_input: Arc<ExternalInputFn>,
     on_unmount: Arc<harbor_widget::widgets::custom_paint::ExternalUnmountFn>,
+    renderer: Option<Arc<Mutex<TerminalRenderPipeline>>>,
 }
 
 impl TerminalWidgetBridge {
     #[allow(dead_code)]
     /// Creates a headless bridge for input/scheduling without a GPU projection.
+    /// Host transaction access; the renderer remains shared with this bridge's draw/IME providers.
+    pub fn renderer(&self) -> Option<Arc<Mutex<TerminalRenderPipeline>>> {
+        self.renderer.clone()
+    }
     pub fn new(
         draw_id: impl Into<ExternalDrawId>,
         terminal: Arc<Mutex<Terminal>>,
@@ -443,6 +450,7 @@ impl TerminalWidgetBridge {
 
         Self {
             draw_id,
+            renderer,
             terminal,
             handler,
             schedule,
@@ -1786,7 +1794,7 @@ mod decoration_tests {
         child: impl Component + Clone + 'static,
     ) -> impl Component {
         TestMainTerminalRoot {
-            root: crate::tab_view::ui::root_padding(
+            root: crate::workspace::root_padding(
                 backdrop_available,
                 harbor_config::WindowBackdropStyle::default().fallback,
             ),
@@ -1871,7 +1879,7 @@ mod decoration_tests {
 
     #[test]
     fn should_apply_four_dp_inset_with_opaque_fallback_when_no_backdrop() {
-        let root = crate::tab_view::ui::root_padding(
+        let root = crate::workspace::root_padding(
             false,
             harbor_config::WindowBackdropStyle::default().fallback,
         );
@@ -1884,7 +1892,7 @@ mod decoration_tests {
 
     #[test]
     fn should_omit_root_background_when_backdrop_is_available() {
-        let root = crate::tab_view::ui::root_padding(
+        let root = crate::workspace::root_padding(
             true,
             harbor_config::WindowBackdropStyle::default().fallback,
         );

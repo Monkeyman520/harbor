@@ -1,4 +1,6 @@
-# Copy to ~/.harbor/config.toml. Settings are read once at startup.
+# Copy to ~/.harbor/config.toml. Watched by default; Ctrl+Shift+R reloads manually.
+# Colors, bindings and terminal-only fonts apply live. Shell/env/directory affect new tabs only.
+# A rejected reload retains the last accepted configuration. Saves/replacements are coalesced; widget HMR is unrelated.
 
 [font]
 family = "Cascadia Mono"
@@ -7,6 +9,16 @@ size = 24.0
 [shell]
 program = "pwsh.exe"
 args = ["-NoLogo"]
+# Optional; relative paths are anchored at config.toml's directory, not terminal cwd.
+# Must exist. Omit to inherit Harbor's directory; unavailable later means failed spawn.
+# directory = 'projects'
+
+# Child-only literal overrides; Windows keys are case-insensitive (duplicates reject).
+# Empty is not deletion. Remove an override to restore inheritance in new sessions.
+# TERM is protected: only xterm-256color is accepted, regardless of key casing.
+# [shell.environment]
+# HARBOR_EXAMPLE = '$VAR %VAR% $(literal text)'
+# HARBOR_EMPTY = ""
 
 # OSC 52 system clipboard writes: allow (default), deny, or confirm.
 # Foreground active live tab only; confirm approves exactly one request.
@@ -17,7 +29,10 @@ osc52_write = "allow"
 # Each command table's bindings replace its defaults. Modifiers in one record are
 # simultaneous. Omit a command table to retain its defaults; use `bindings = []`
 # to unbind it. Multiple records bind multiple chords. Any invalid command, field,
-# modifier, key, duplicate, or conflict restores the complete default binding set.
+# modifier, key, duplicate, or conflict restores all defaults at startup and
+# rejects the entire candidate during manual or automatic reload.
+[keybindings.app.reload-configuration]
+bindings = [{ modifiers = ["ctrl", "shift"], key = "r" }]
 [keybindings.app.new-tab]
 bindings = [{ modifiers = ["ctrl"], key = "t" }]
 [keybindings.app.close-active-tab]

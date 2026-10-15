@@ -1,5 +1,7 @@
 mod event_router;
 mod frame_encoder;
+#[cfg(test)]
+mod portal_tests;
 
 use crate::effects::{
     ClipboardEffect, ControlFlowEffect, CursorEffect, ExternalInvalidation, ImeEffect,
@@ -463,6 +465,13 @@ impl Runtime {
             };
             let child_rects = children
                 .iter()
+                .filter(|child| {
+                    !self
+                        .arena
+                        .get(**child)
+                        .and_then(|f| f.view.as_ref())
+                        .is_some_and(|v| v.is_portal())
+                })
                 .filter_map(|child| self.arena.get(*child).and_then(|fiber| fiber.layout_rect))
                 .collect::<Vec<_>>();
             view.post_layout(rect, &child_rects);
@@ -634,6 +643,19 @@ impl Runtime {
         }
         effects.merge(self.collect_focused_external_ime());
         effects
+    }
+
+    /// Cancel input actions when a host gates/replaces an input-owning subtree.
+    /// Consumed shortcut repeats/releases stay suppressed until release or a new
+    /// native physical press, even if a modal gate drops the old release.
+    pub fn cancel_active_input_ownership(&mut self, position: Point) -> RuntimeEffects {
+        self.events.cancel_shortcut_actions();
+        self.cancel_pointer_captures(position)
+    }
+
+    #[cfg(feature = "winit")]
+    pub(crate) fn begin_key_press(&mut self, key: crate::input::event::Key) {
+        self.events.begin_key_press(key);
     }
 
     /// Cancels every pointer currently captured by a widget.

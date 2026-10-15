@@ -16,6 +16,13 @@ Project domain concepts and terminology.
 - **Relationships:**
   - depends on System-Native Font Loading
 
+### Terminal Font Policy
+- **Definition:** Configured font family and size govern terminal rendering and its grid metrics, independently of system UI fonts for widgets, application chrome, and dialogs. The approved live-reload extension replaces terminal font/render resources without restarting the application or PTYs, recreating sessions, or clearing buffers. Font-driven grid changes use normal bounded resize behavior, keeping newer content while permitting ordinary old-history eviction and alternate-screen boundary clipping; those effects alone do not reject reload. [ADR 0059](./adr/0059-atomic-manual-reload-and-terminal-only-fonts.md) records the boundary, qualified by [ADR 0060](./adr/0060-font-reload-uses-normal-bounded-resize.md); neither establishes implementation or runtime acceptance.
+- **Relationships:**
+  - belongs to Terminal
+  - depends on System Default Font Selection
+  - references Manual Configuration Reload
+
 ### DirectWrite Font Backend
 - **Definition:** The Windows `harbor-text` backend that uses DirectWrite for font selection, system fallback, metrics, glyph resolution, and rasterization while retaining the existing WGPU glyph atlas.
 - **Relationships:**
@@ -41,6 +48,12 @@ Project domain concepts and terminology.
   - contains Signal
   - contains View
   - communicates with wgpu Renderer
+
+### Reusable Widget Component
+- **Definition:** The approved `harbor-widget` ownership boundary for UI mechanisms whose contracts remain meaningful in a non-terminal application without interpreting Harbor business types. Current consumer count or a terminal-shaped icon does not determine ownership. Product composition, command meaning and policy remain application-owned; see [ADR 0064](./adr/0064-widget-and-application-component-ownership.md).
+- **Relationships:**
+  - belongs to Harbor Widget Runtime
+  - references Component
 
 ### View
 - **Definition:** An immutable UI description produced by component build methods, discardable after each build pass.
@@ -221,6 +234,20 @@ Project domain concepts and terminology.
   - belongs to Widget Decoration
   - references BoxDecoration
 
+### Portal
+- **Definition:** The root-composable escape capability in `harbor-widget`: content declared in the component tree is presented in a root-level overlay, outside its original parent's layout and clipping, without consuming terminal space. Notifications are a consumer, not its business policy owner. See [ADR 0063](./adr/0063-root-composable-escape-and-quiet-configuration-notices.md) for semantics and [ADR 0064](./adr/0064-widget-and-application-component-ownership.md) for component ownership. The implementation is present in `widgets/portal.rs`; this definition is not a runtime acceptance claim.
+- **Synonyms:** Escape component, Root-level escape component
+- **Relationships:**
+  - belongs to Harbor Widget Runtime
+  - references Component
+
+### Notification Presentation
+- **Definition:** The approved boundary between reusable widget notification content/card and close/scroll interaction, generic Portal escape, and application-owned placement, visual choices, eligibility, message meaning, duplicate suppression, recovery and dismissal history. Local pressed/scroll state belongs to the presentation component. Harbor retains top-right, non-modal, manually dismissible notices without focus theft; actionable errors do not automatically disappear. The ownership refactoring is selected, not an implementation claim; see [ADR 0064](./adr/0064-widget-and-application-component-ownership.md).
+- **Relationships:**
+  - depends on Portal
+  - references Reusable Widget Component
+  - references Application UI Composition
+
 ### Viewport
 - **Definition:** The logical pixel size, physical pixel size, and scale factor passed to Runtime::encode for converting dp layout coordinates to GPU NDC.
 - **Relationships:**
@@ -242,6 +269,14 @@ Project domain concepts and terminology.
   - belongs to Runtime Host
   - communicates with Winit Adapter
   - communicates with Harbor Widget Runtime
+
+### Application UI Composition
+- **Definition:** The approved application-layer ownership of workspace/root composition, tab UI, notification composition, confirmation UI and product appearance presets. Application-wide notification state and keybinding publication have an application-level owner rather than being tab-specific responsibilities; the current PreviewPane belongs with shared confirmation UI. `harbor-app-ui` remains a thin HMR root entry, not the destination for all UI implementation. These are responsibility boundaries, not fixed type/module names or a requirement for separate stores; see [ADR 0064](./adr/0064-widget-and-application-component-ownership.md).
+- **Relationships:**
+  - communicates with Application Business Host
+  - depends on Reusable Widget Component
+  - references Notification Presentation
+  - references Terminal Widget Bridge
 
 ### Application-Layer Widget Hot Reload
 - **Definition:** An optional Windows debug-development capability in the `harbor-widget::winit` integration that observes reloads, tears down the active root safely, and installs a replacement application root while retaining native host infrastructure and Host-owned business state.
@@ -326,7 +361,7 @@ Project domain concepts and terminology.
   - communicates with Terminal
 
 ### Terminal Selection Lifecycle
-- **Definition:** Copying preserves explicit newlines while joining soft-wrapped rows; after a successful copy the selection is cleared. An existing selection is replaced by a new left-button press, cleared by Escape, and retained across output, scrolling, and focus loss.
+- **Definition:** Copying preserves explicit newlines while joining soft-wrapped rows; after a successful copy the selection is cleared. An existing selection is replaced by a new left-button press, cleared by Escape, and retained across output, scrolling, and focus loss. Escape is consumed locally only when it cancels selection or local pointer interaction; otherwise it is encoded and forwarded to the PTY, including in alternate-screen applications.
 - **Relationships:**
   - belongs to Terminal Text Selection
   - references Logical Line
@@ -785,8 +820,31 @@ Project domain concepts and terminology.
   - belongs to Widget Renderer
   - implements ClipBehavior
   - reveals the host/frame clear where clipped pixels are erased
+### Manual Configuration Reload
+- **Definition:** The approved application-command transaction that validates a complete TOML candidate and prepares supported resources before publishing a coherent accepted configuration to existing applicable sessions and future-instance factories. Failure retains the last accepted configuration rather than applying startup fallback. It is distinct from development-only widget-library HMR; terminal font changes preserve terminal/session identity and use ordinary bounded resize retention rather than resetting buffers, while OSC RGB overrides remain above a newly accepted reset baseline. See [ADR 0059](./adr/0059-atomic-manual-reload-and-terminal-only-fonts.md) and its retention clarification in [ADR 0060](./adr/0060-font-reload-uses-normal-bounded-resize.md); the implementation is present, while interactive Windows runtime acceptance remains NOT RUN as stated in [Current Status](../docs/current-status.md).
+- **Failure qualification:** A failed compensating native PTY resize permits an explicitly reported recovery-failed outcome, with old accepted settings retained, all readers resumed, geometry reconciliation attempted, and unrecovered sessions identified. Ordinary failures do not permit partial acceptance. See [ADR 0061](./adr/0061-manual-reload-compensation-failure.md).
+- **Relationships:**
+  - belongs to Application Business Host
+  - references TOML User Settings
+  - references Application Command Dispatcher
+  - references Terminal Font Policy
+  - references OSC Default Color Policy
+  - references OSC Indexed Palette Policy
+
+### Watched Configuration Reload
+- **Definition:** The approved, not-yet-implemented default-on file-triggered extension of Manual Configuration Reload. Debounced saves and editor file replacement use the same strict acceptance boundary; invalid edits retain the last accepted configuration, repeated identical errors avoid notification flooding, and watcher faults remain visible. See [ADR 0062](./adr/0062-watched-reload-and-new-session-launch-settings.md).
+- **Relationships:**
+  - extends Manual Configuration Reload
+  - belongs to Application Business Host
+
+### New-Session Launch Settings
+- **Definition:** The approved child-launch configuration for shell program, arguments, environment overrides and initial working directory. Reload updates future sessions only, without mutating existing children or Harbor's global environment/directory. Environment values are literal overlays with protected TERM; relative directories resolve against the configuration file, and an unavailable configured directory fails rather than silently falling back. See [ADR 0062](./adr/0062-watched-reload-and-new-session-launch-settings.md) for validation, inheritance and confidentiality rules. Environment/directory configuration is not yet implemented.
+- **Relationships:**
+  - references TOML User Settings
+  - references Manual Configuration Reload
+
 ### TOML User Settings
-- **Definition:** Startup-only user preferences loaded from `~/.harbor/config.toml`; missing files use defaults, invalid scalar settings fall back independently, and an invalid color value resets the complete palette to defaults.
+- **Definition:** User preferences (loaded with startup recovery and re-read through the separately strict Manual Configuration Reload transaction) loaded from `~/.harbor/config.toml`; at startup, missing files use defaults, invalid scalar settings fall back independently, and an invalid color value resets the complete palette to defaults.
 - **Relationships:**
   - configures Terminal
   - configures System Default Font Selection

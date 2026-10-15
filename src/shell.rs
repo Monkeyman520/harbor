@@ -25,17 +25,136 @@ use crate::tab_coordinator::{
 use crate::telemetry::{FrameState, HIDDEN_STARTUP_RETRY_DELAY};
 use harbor_app::command::{AppCommand, resolve_keybindings};
 use harbor_app::tab_manager::TabManager;
-use harbor_app::tab_view::TabUiController;
-use harbor_app::tab_view::ui::MainWindowRootInputs;
+use harbor_app::workspace::MainWindowRootInputs;
+use harbor_app::workspace::WorkspaceUiController;
 #[cfg(not(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions)))]
-use harbor_app::tab_view::ui::main_window_root;
-use harbor_pty::ShellCommand;
+use harbor_app::workspace::main_window_root;
 use harbor_terminal::{Terminal, TerminalAppearance, TextMetrics, load_system_fonts};
 use harbor_widget::effects::ControlFlowEffect;
 use harbor_widget::view::{BuildCx, Component, View};
 use harbor_widget::winit::{
     HostFrameOutcome, HostInitContext, HostStartupError, WinitWindowHost, WinitWindowHostBuilder,
 };
+
+/// Separate diagnostics from the subset that needs persistent user attention.
+pub(crate) struct ConfigurationAcceptance {
+    pub summary: String,
+    pub notice: Option<String>,
+}
+
+/// Typed application-effect failure, distinct from a rejected document. A missing
+/// file is not resource recovery and must not erase compensation/error feedback.
+#[derive(Debug)]
+struct ConfigurationOperationFailure;
+
+impl std::fmt::Display for ConfigurationOperationFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("configuration application failed")
+    }
+}
+/// Strict live I/O seam shared by manual and watched reload. Absence is a
+/// non-acceptance outcome; the application transaction is not called at all.
+pub(crate) fn reload_configuration_from_path(
+    path: Option<&std::path::Path>,
+    accepted: &mut harbor_config::Settings,
+    effective_clipboard: &harbor_config::ClipboardSettings,
+    apply: impl FnOnce(
+        &harbor_config::Settings,
+        bool,
+        harbor_app::command::ResolvedKeybindings,
+    ) -> anyhow::Result<Vec<String>>,
+) -> anyhow::Result<Option<ConfigurationAcceptance>> {
+    let path = path.ok_or_else(|| anyhow::anyhow!("could not resolve configuration path"))?;
+    let loaded = match harbor_config::load_candidate_from_path(path) {
+        Ok(loaded) => loaded,
+        Err(error) if error.io_kind == Some(std::io::ErrorKind::NotFound) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut result = accept_configuration(
+        accepted,
+        effective_clipboard,
+        loaded.settings,
+        |candidate, font_changed, bindings| {
+            apply(candidate, font_changed, bindings)
+                .map_err(|error| error.context(ConfigurationOperationFailure))
+        },
+    )?;
+    let mut notices = result.notice.into_iter().collect::<Vec<_>>();
+    for diagnostic in loaded.diagnostics {
+        tracing::warn!(path = %path.display(), message = %diagnostic.message, "configuration warning");
+        notices.push(diagnostic.message);
+    }
+    result.notice = (!notices.is_empty()).then(|| notices.join("; "));
+    Ok(Some(result))
+}
+
+/// Validates and publishes one requested generation on the application thread.
+/// `apply` owns the real session/factory transaction and infallible binding move.
+/// Keeping this independent of a Window makes acceptance ordering testable.
+pub(crate) fn accept_configuration(
+    accepted: &mut harbor_config::Settings,
+    effective_clipboard: &harbor_config::ClipboardSettings,
+    candidate: harbor_config::Settings,
+    apply: impl FnOnce(
+        &harbor_config::Settings,
+        bool,
+        harbor_app::command::ResolvedKeybindings,
+    ) -> anyhow::Result<Vec<String>>,
+) -> anyhow::Result<ConfigurationAcceptance> {
+    let bindings = harbor_app::command::validate_keybindings(&candidate.keybindings)
+        .map_err(|errors| anyhow::anyhow!("{}", errors.join("; ")))?;
+    let font_changed = candidate.font != accepted.font;
+    let warnings = apply(&candidate, font_changed, bindings)?;
+    let mut live = Vec::new();
+    if candidate.colors != accepted.colors {
+        live.push("colors");
+    }
+    if candidate.keybindings != accepted.keybindings {
+        live.push("keybindings");
+    }
+    if font_changed {
+        live.push("terminal fonts");
+    }
+    let mut parts = Vec::new();
+    if !live.is_empty() {
+        parts.push(format!("applied live: {}", live.join(", ")));
+    }
+    let mut launch = Vec::new();
+    if candidate.shell.program != accepted.shell.program
+        || candidate.shell.args != accepted.shell.args
+    {
+        launch.push("shell program/arguments");
+    }
+    if candidate.shell.environment != accepted.shell.environment {
+        launch.push("environment");
+    }
+    if candidate.shell.directory != accepted.shell.directory {
+        launch.push("initial directory");
+    }
+    if !launch.is_empty() {
+        parts.push(format!("new sessions only: {}", launch.join(", ")));
+    }
+    let mut actionable = warnings.clone();
+    if candidate.clipboard != *effective_clipboard {
+        actionable.push(
+            "restart required: clipboard.osc52_write (unchanged for existing and new sessions)"
+                .to_owned(),
+        );
+        parts.push(
+            "restart required: clipboard.osc52_write (unchanged for existing and new sessions)"
+                .to_owned(),
+        );
+    }
+    if parts.is_empty() {
+        parts.push("no effective settings changed".to_owned());
+    }
+    parts.extend(warnings);
+    *accepted = candidate;
+    Ok(ConfigurationAcceptance {
+        summary: parts.join("; "),
+        notice: (!actionable.is_empty()).then(|| actionable.join("; ")),
+    })
+}
 
 /// Active session resources that exist while the window and renderer are alive.
 pub(crate) struct ActiveSession {
@@ -46,6 +165,11 @@ pub(crate) struct ActiveSession {
     foreground_monitor: crate::clipboard::foreground_monitor::ForegroundMonitor,
     clipboard_epoch: u64,
     tabs: TabCoordinator,
+    workspace_ui: WorkspaceUiController,
+    configuration_watch: Option<crate::configuration_watch::ConfigurationWatch>,
+    reload_feedback: crate::configuration_watch::ReloadFeedback,
+    accepted_settings: harbor_config::Settings,
+    effective_clipboard: harbor_config::ClipboardSettings,
     show_pending: bool,
     startup_retry_deadline: Option<Instant>,
     main_host: WinitWindowHost,
@@ -264,20 +388,119 @@ impl ActiveSession {
         }
     }
 
+    fn report_watch_failure(&mut self, reason: &str, retrying: bool) {
+        // A watcher fault is a different visible failure. Once I/O recovers,
+        // resurface any still-invalid candidate rather than leave a stale
+        // "watching unavailable" message behind duplicate suppression.
+        self.reload_feedback.clear();
+        let path = harbor_config::default_config_path()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "~/.harbor/config.toml".to_owned());
+        let recovery = if retrying {
+            "Observation will retry automatically."
+        } else {
+            "Restart Harbor to retry observation."
+        };
+        let message = format!(
+            "Configuration watching unavailable ({path}): {reason}. {recovery} Previously accepted configuration remains effective. Manual reload (app.reload-configuration) remains available."
+        );
+        tracing::error!(%message, "configuration watcher failure");
+        self.workspace_ui.publish_configuration_notice(
+            harbor_app::notifications::ConfigurationNoticeSource::Observation,
+            Some(message),
+        );
+    }
+
+    fn reload_configuration(&mut self, automatic: bool) {
+        use harbor_app::notifications::ConfigurationNoticeSource as Source;
+        let path = harbor_config::default_config_path();
+        let path_label = path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "~/.harbor/config.toml (home directory unavailable)".to_owned());
+        let viewport = self.main_host.viewport().clone();
+        let result = reload_configuration_from_path(
+            path.as_deref(),
+            &mut self.accepted_settings,
+            &self.effective_clipboard,
+            |candidate, font_changed, bindings| {
+                let warnings = self.tabs.apply_configuration(
+                    candidate,
+                    font_changed,
+                    viewport.scale_factor,
+                    viewport.physical_size,
+                )?;
+                self.workspace_ui.publish_keybindings(bindings);
+                Ok(warnings)
+            },
+        );
+        match result {
+            Ok(acceptance) => {
+                self.reload_feedback.clear();
+                if acceptance.is_some() {
+                    self.workspace_ui
+                        .publish_configuration_notice(Source::Resource, None);
+                }
+                self.workspace_ui
+                    .publish_configuration_notice(Source::Startup, None);
+                let notice = acceptance.and_then(|accepted| {
+                    tracing::info!(path = %path_label, summary = %accepted.summary, "configuration reload accepted");
+                    accepted.notice.map(|notice| format!("Configuration ({path_label}): {notice}"))
+                });
+                self.workspace_ui
+                    .publish_configuration_notice(Source::Reload, notice);
+            }
+            Err(error) => {
+                self.workspace_ui
+                    .publish_configuration_notice(Source::Startup, None);
+                let source = if error.is::<ConfigurationOperationFailure>() {
+                    Source::Resource
+                } else {
+                    Source::Reload
+                };
+                if source == Source::Resource {
+                    self.workspace_ui
+                        .publish_configuration_notice(Source::Reload, None);
+                }
+                let message = format!(
+                    "Configuration reload failed ({path_label}): {error:#}. Previously accepted configuration remains effective; any recovery failure is identified above."
+                );
+                if self.reload_feedback.failure(&message, automatic) {
+                    tracing::error!(%message, "configuration reload rejected");
+                    // An explicit retry still reports its result; only repeated
+                    // automatic events must stay dismissed in the same episode.
+                    if !automatic {
+                        self.workspace_ui.publish_configuration_notice(source, None);
+                    }
+                    self.workspace_ui
+                        .publish_configuration_notice(source, Some(message));
+                }
+            }
+        }
+    }
     fn drain_app_commands(
         &mut self,
         event_loop: &ActiveEventLoop,
     ) -> crate::tab_coordinator::TabDrainOutcome {
         let mut result = crate::tab_coordinator::TabDrainOutcome::default();
-        for request in self.tabs.drain_actions() {
+        for request in self.workspace_ui.drain_actions() {
             if self.paste.is_active() {
                 break;
             }
             match request.command {
+                AppCommand::DismissNotification(revision) => {
+                    self.workspace_ui.dismiss_notification(revision);
+                    Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
+                }
+                AppCommand::ReloadConfiguration => {
+                    self.reload_configuration(false);
+                    Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
+                }
                 AppCommand::Tab(command) => {
                     let outcome =
                         self.tabs
                             .execute_tab_command(&mut self.main_host, command, request.focus);
+
                     Self::merge_wait(&mut result.wait, outcome.wait);
                     self.reconcile_clipboard();
                     if outcome.close_window {
@@ -387,6 +610,26 @@ impl ActiveSession {
                         self.main_host.invalidate_external(invalidation).wait,
                     );
                 }
+            }
+            AppEvent::ConfigurationWatch => {
+                match self
+                    .configuration_watch
+                    .as_ref()
+                    .and_then(|watch| watch.take_pending())
+                {
+                    Some(crate::configuration_watch::WatchEvent::Reload) => {
+                        self.workspace_ui.publish_configuration_notice(
+                            harbor_app::notifications::ConfigurationNoticeSource::Observation,
+                            None,
+                        );
+                        self.reload_configuration(true);
+                    }
+                    Some(crate::configuration_watch::WatchEvent::Unavailable(kind)) => {
+                        self.report_watch_failure(&format!("observation I/O: {kind:?}"), true);
+                    }
+                    None => {}
+                }
+                Self::merge_wait(&mut wait, self.main_host.request_frame().wait);
             }
             AppEvent::OpenHyperlink(uri) => {
                 if let Err(error) = crate::hyperlink::open(&uri) {
@@ -640,10 +883,16 @@ impl Shell {
                 }
             }
         }
+        let mut startup_notices = loaded
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect::<Vec<_>>();
         let keybinding_resolution = resolve_keybindings(&loaded.settings.keybindings);
         for diagnostic in &keybinding_resolution.diagnostics {
             tracing::error!(message = %diagnostic, "keybinding fallback");
         }
+        startup_notices.extend(keybinding_resolution.diagnostics.iter().cloned());
         let keybindings = keybinding_resolution.keybindings;
         let settings = loaded.settings;
         let clipboard_policy = settings.clipboard.osc52_write;
@@ -655,7 +904,7 @@ impl Shell {
             backdrop_style,
         );
         let font_settings = settings.font.clone();
-        let shell_command = ShellCommand::new(settings.shell.program, settings.shell.args);
+        let shell_command = crate::tab_coordinator::configured_shell(&settings.shell);
         let event_proxy = self.event_proxy.clone();
         #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
         let hmr_root_inputs = Rc::new(RefCell::new(None::<MainWindowRootInputs>));
@@ -688,6 +937,12 @@ impl Shell {
             move |context: HostInitContext<'_>, _platform_state: &MainWindowPlatformState| {
                 // Create DirectWrite objects on the UI/render owning thread (no font-loader thread).
                 let fonts = load_system_fonts(&font_settings)?;
+                let font_warnings = fonts
+                    .selection_warning()
+                    .map(str::to_owned)
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                startup_notices.extend(font_warnings.iter().cloned());
                 let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
                 let surface = context.surface();
                 let size = Terminal::terminal_size_for(surface.physical_size, &metrics);
@@ -697,6 +952,7 @@ impl Shell {
                     surface.format,
                     shell_command,
                     font_settings,
+                    font_warnings,
                     metrics,
                     appearance,
                     context.backdrop_available(),
@@ -716,13 +972,25 @@ impl Shell {
                 let active_bridge = tabs
                     .active_bridge()
                     .expect("initial tab creation establishes an active bridge");
-                let tab_ui = TabUiController::new(
+                let workspace_ui = WorkspaceUiController::new(
                     tabs.snapshots(),
                     active_bridge,
                     logical_window_width(context.window()),
                 );
+                if !startup_notices.is_empty() {
+                    let path = harbor_config::default_config_path()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "~/.harbor/config.toml".to_owned());
+                    workspace_ui.publish_configuration_notice(
+                        harbor_app::notifications::ConfigurationNoticeSource::Startup,
+                        Some(format!(
+                            "Configuration startup ({path}): {}",
+                            startup_notices.join("; ")
+                        )),
+                    );
+                }
                 let root_inputs = MainWindowRootInputs::new(
-                    tab_ui.clone(),
+                    workspace_ui.clone(),
                     context.backdrop_available(),
                     backdrop_fallback,
                     keybindings.clone(),
@@ -733,16 +1001,17 @@ impl Shell {
                 }
                 let root = build_application_root(root_inputs.clone())
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-                let tabs = TabCoordinator::new(tabs, tab_ui, factory);
+                let tabs = TabCoordinator::new(tabs, workspace_ui.clone(), factory);
                 let paste = PasteController::new(input_gate);
-                Ok((root, (tabs, paste)))
+                Ok((root, (tabs, paste, workspace_ui)))
             },
         )
         .with_platform_hooks(platform);
         #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
         let builder = builder.with_hmr(hmr);
 
-        let (main_host, (tabs, paste)) = pollster::block_on(builder.build_with_output(event_loop))?;
+        let (main_host, (tabs, paste, workspace_ui)) =
+            pollster::block_on(builder.build_with_output(event_loop))?;
         let mut session = ActiveSession {
             paste,
             clipboard: crate::clipboard::ClipboardPolicy::new(clipboard_policy),
@@ -750,10 +1019,27 @@ impl Shell {
             foreground_monitor: crate::clipboard::foreground_monitor::ForegroundMonitor::new(),
             clipboard_epoch: 0,
             tabs,
+            workspace_ui,
+            effective_clipboard: settings.clipboard.clone(),
+            configuration_watch: None,
+            reload_feedback: Default::default(),
+            accepted_settings: settings,
             show_pending: true,
             startup_retry_deadline: None,
             main_host,
         };
+
+        let watch_proxy = self.event_proxy.clone();
+        match crate::configuration_watch::ConfigurationWatch::start(
+            harbor_config::default_config_path(),
+            move || watch_proxy.send_event(AppEvent::ConfigurationWatch).is_ok(),
+        ) {
+            Ok(watch) => session.configuration_watch = Some(watch),
+            // Do not include arbitrary OS messages or any configuration contents.
+            Err(error) => {
+                session.report_watch_failure(&format!("setup: {:?}", error.kind()), false)
+            }
+        }
 
         let mut wait = None;
         let focus = session.tabs.terminal_focus();
@@ -771,6 +1057,9 @@ impl Shell {
     }
 }
 
+#[cfg(test)]
+#[path = "configuration_notice_tests.rs"]
+mod configuration_notice_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
