@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="Harbor" Manufacturer="Harbor contributors" Version="$(var.ProductVersion)"
+           UpgradeCode="8D8528C4-4752-4A7C-9AC4-15794BE37D83"
+           Scope="perUserOrMachine" InstallerVersion="500" Compressed="yes">
+    <MediaTemplate EmbedCab="yes" />
+    <MajorUpgrade Schedule="afterInstallInitialize" MigrateFeatures="no"
+                  DowngradeErrorMessage="A newer version of Harbor is already installed." />
+    <Property Id="HARBOR_USER_INSTALL" Secure="yes">
+      <RegistrySearch Id="HarborUserSearch" Root="HKCU" Key="Software\Harbor\Installations"
+                      Name="Installed" Type="raw" Bitness="always64" />
+    </Property>
+    <Property Id="HARBOR_MACHINE_INSTALL" Secure="yes">
+      <RegistrySearch Id="HarborMachineSearch" Root="HKLM" Key="Software\Harbor\Installations"
+                      Name="Installed" Type="raw" Bitness="always64" />
+    </Property>
+    <!-- MSI caches scope-redirected standard folders before the scope dialog.
+         Read the physical 64-bit root so a later machine choice cannot retain
+         the initial user's Programs directory in the editable install path. -->
+    <Property Id="HARBOR_NATIVE_PROGRAM_FILES" Secure="yes">
+      <RegistrySearch Id="HarborNativeProgramFilesSearch" Root="HKLM"
+                      Key="Software\Microsoft\Windows\CurrentVersion"
+                      Name="ProgramFilesDir" Type="raw" Bitness="always64" />
+    </Property>
+    <Property Id="HARBOR_SCOPE" Value="user" />
+    <!-- Scope selection precedes the Search stage, so upgrade discovery and
+         launch conditions see the final context without violating ICE27. -->
+    <SetProperty Id="ALLUSERS" Value="" Before="FindRelatedProducts"
+                 Condition="NOT Installed AND ALLUSERS=2 AND MSIINSTALLPERUSER=1" />
+    <InstallUISequence>
+      <Show Dialog="HarborScopeDlg" Before="SetALLUSERS" Condition="NOT Installed" />
+      <AppSearch Before="LaunchConditions" />
+    </InstallUISequence>
+    <InstallExecuteSequence>
+      <AppSearch Before="LaunchConditions" />
+    </InstallExecuteSequence>
+    <Launch Condition="Installed OR REMOVE=&quot;ALL&quot; OR ((NOT ALLUSERS) AND NOT HARBOR_MACHINE_INSTALL) OR ((ALLUSERS) AND NOT HARBOR_USER_INSTALL)"
+            Message="Harbor is installed in the other installation scope. Uninstall that installation before switching between current-user and all-users installation." />
+    <Launch Condition="NOT ALLUSERS OR HARBOR_NATIVE_PROGRAM_FILES"
+            Message="Windows did not provide the native Program Files directory. All-users installation cannot continue." />
+    <SetProperty Id="APPLICATIONFOLDER" Action="HarborUserDirectory"
+                 Value="[LocalAppDataFolder]Apps\Harbor" Before="CostFinalize"
+                 Condition="NOT APPLICATIONFOLDER AND NOT ALLUSERS" />
+    <SetProperty Id="APPLICATIONFOLDER" Action="HarborMachineDirectory"
+                 Value="[HARBOR_NATIVE_PROGRAM_FILES]\Harbor" Before="CostFinalize"
+                 Condition="NOT APPLICATIONFOLDER AND ALLUSERS" />
+    <Property Id="ARPPRODUCTICON" Value="HarborIcon.exe" />
+    <Icon Id="HarborIcon.exe" SourceFile="$(var.PayloadDirectory)\harbor.exe" />
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="APPLICATIONFOLDER" />
+    <UI>
+      <Dialog Id="HarborScopeDlg" Width="370" Height="270" Title="Harbor Setup">
+        <Control Id="Title" Type="Text" X="20" Y="20" Width="330" Height="30"
+                 Text="Choose who can use Harbor" />
+        <Control Id="Scope" Type="RadioButtonGroup" Property="HARBOR_SCOPE"
+                 X="25" Y="65" Width="320" Height="90">
+          <RadioButtonGroup Property="HARBOR_SCOPE">
+            <RadioButton Value="user" X="0" Y="0" Width="310" Height="25"
+                         Text="Only me (no administrator authorization required)" />
+            <RadioButton Value="machine" X="0" Y="40" Width="310" Height="25"
+                         Text="All users (administrator authorization required)" />
+          </RadioButtonGroup>
+        </Control>
+        <Control Id="Next" Type="PushButton" X="235" Y="243" Width="56" Height="17"
+                 Default="yes" Text="Next">
+          <Publish Property="ALLUSERS" Value="{}" Order="1" Condition="HARBOR_SCOPE=&quot;user&quot;" />
+          <Publish Property="MSIINSTALLPERUSER" Value="1" Order="2" Condition="HARBOR_SCOPE=&quot;user&quot;" />
+          <Publish Property="ALLUSERS" Value="2" Order="3" Condition="HARBOR_SCOPE=&quot;machine&quot;" />
+          <Publish Property="MSIINSTALLPERUSER" Value="{}" Order="4" Condition="HARBOR_SCOPE=&quot;machine&quot;" />
+          <Publish Event="EndDialog" Value="Return" Order="5" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17"
+                 Cancel="yes" Text="Cancel">
+          <Publish Event="EndDialog" Value="Exit" />
+        </Control>
+      </Dialog>
+    </UI>
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="APPLICATIONFOLDER" Name="Harbor" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="Harbor" />
+    </StandardDirectory>
+    <Component Id="ScopeRegistration" Directory="APPLICATIONFOLDER"
+               Guid="C56E4C66-74E4-48A7-B1D7-87FAD283241D">
+      <RegistryValue Root="HKMU" Key="Software\Harbor\Installations" Name="Installed"
+                     Type="string" Value="[ProductVersion]" KeyPath="yes" />
+    </Component>
+    <Feature Id="HarborApplication" Title="Harbor" Level="1" AllowAbsent="no" AllowAdvertise="no">
+      <Component Id="HarborExecutable" Directory="APPLICATIONFOLDER" Guid="*">
+        <File Id="HarborExe" Source="$(var.PayloadDirectory)\harbor.exe" KeyPath="yes">
+          <Shortcut Id="HarborShortcut" Name="Harbor" Directory="ApplicationProgramsFolder"
+                    Advertise="yes" WorkingDirectory="APPLICATIONFOLDER" Icon="HarborIcon.exe" />
+        </File>
+        <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
+      </Component>
+      <!-- Harvest the common payload unchanged; exe is separately authored only
+           to attach its advertised shortcut to the executable file keypath. -->
+      <Files Include="$(var.PayloadDirectory)\**" Directory="APPLICATIONFOLDER">
+        <Exclude Files="$(var.PayloadDirectory)\harbor.exe" />
+      </Files>
+      <ComponentRef Id="ScopeRegistration" />
+    </Feature>
+  </Package>
+</Wix>

@@ -851,6 +851,12 @@ Project domain concepts and terminology.
   - configures Window Backdrop Tint
   - configures Application Keybindings
 
+### Portable Distribution Mode
+- **Definition:** The Windows ZIP configuration mode identified by a `harbor.portable` marker beside `harbor.exe`, reading startup `config.toml` from that same directory without reading or writing home-directory configuration. Configuration moves with the directory; startup does not create or overwrite it. Installed builds retain the current TOML User Settings path. Startup selection is implemented; complete release acceptance remains pending. See [ADR 0057](./adr/0057-windows-installation-and-portable-isolation.md).
+- **Synonyms:** full portable mode, portable ZIP
+- **Relationships:**
+  - references TOML User Settings
+
 
 ### Widget Store
 - **Definition:** A reusable `harbor-widget` boundary that combines a UI-thread `Signal<S>` for Host-published declarative state with a private FIFO inbox for one-shot widget actions. It owns neither reducers nor side effects and does not automatically wake a Runtime.

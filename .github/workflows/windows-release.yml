@@ -1,0 +1,119 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Check and package x64 release
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install .NET for pinned WiX
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Validate stable tag and Cargo version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: ./scripts/package_windows.ps1 -ValidateVersionOnly -ReleaseTag $env:RELEASE_TAG
+
+      - name: Restore pinned ConPTY runtime
+        run: ./scripts/fetch_conpty.ps1
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run workspace tests
+        env:
+          HARBOR_TEST_GPU: dx12-warp
+        run: cargo test --workspace
+
+      - name: Check documentation
+        run: python scripts/check_docs.py
+
+      - name: Summarize protocol checklist
+        run: python scripts/checklist_summary.py
+
+      - name: Build and validate both release formats
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: ./scripts/package_windows.ps1 -ReleaseTag $env:RELEASE_TAG -OutputDirectory ./target/dist
+
+      - name: Exercise release rejection boundaries
+        run: >-
+          ./scripts/tests/test_package_windows.ps1
+          -ReleaseDirectory ./target/x86_64-pc-windows-msvc/release
+          -MsiPath ("./target/dist/harbor-" + $env:GITHUB_REF_NAME.Substring(1) + "-windows-x64.msi")
+
+      - name: Preserve checked package outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-release
+          path: |
+            target/dist/harbor-*-windows-x64.msi
+            target/dist/harbor-*-windows-x64-portable.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish checked release assets
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download checked packages
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-x64-release
+          path: release-assets
+
+      - name: Create draft, upload both assets, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          msi="release-assets/harbor-${version}-windows-x64.msi"
+          zip="release-assets/harbor-${version}-windows-x64-portable.zip"
+          test -f "$msi"
+          test -f "$zip"
+          # Never replace the contents of an existing published release.
+          if gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' > draft-state; then
+            test "$(cat draft-state)" = true
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "Harbor $RELEASE_TAG" --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" "$msi" "$zip" --clobber
+          gh release edit "$RELEASE_TAG" --draft=false

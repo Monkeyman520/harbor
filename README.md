@@ -38,6 +38,68 @@ To regenerate the checked-in Windows App SDK bindings, restore the pinned build-
 [WASDK metadata](third_party/wasdk/README.md) with `./scripts/fetch_wasdk.ps1`.
 Normal builds do not require this download.
 
+### Windows Release Packages
+
+Build unsigned x64 MSI and portable ZIP packages from one release build:
+
+```powershell
+./scripts/package_windows.ps1
+```
+
+Prerequisites: Windows PowerShell 5.1 or newer, stable Rust with the
+`x86_64-pc-windows-msvc` target and Visual Studio C++ build tools, the **.NET 8+
+SDK** (a runtime alone is insufficient), and access to NuGet. The script restores
+the hash-checked ConPTY package, builds with `--locked --release` and static CRT
+linkage for the x64 target, restores pinned WiX/UI 5.0.2 tooling under `target/wix/`,
+and validates the complete common payload before returning outputs under `target/dist/`:
+
+- `harbor-<version>-windows-x64.msi`
+- `harbor-<version>-windows-x64-portable.zip`
+
+Use `-Format Zip` or `-Format Msi` for one format, and `-OutputDirectory <path>`
+to choose the output directory. Local packaging needs no GitHub credentials.
+`-SkipBuild -ReleaseDirectory <path>` reuses an explicit release directory only
+after checking its x64 binary ProductVersion, absence of direct external versioned
+VC runtime imports, and matching pinned ConPTY runtime. A normal dynamic-CRT build
+is rejected; rebuild through the packager rather than relabeling an old binary.
+Compiler rustflags are scoped to the packaging invocation and restored afterward;
+ordinary development builds keep their existing linkage.
+
+The first MSI page selects current-user or all-users installation and defaults
+to the current user. Current-user installation uses a user-owned directory;
+all-users installation uses native Program Files and requires administrator
+authorization. Both provide scoped Start Menu and uninstall entries. Upgrade in
+the same scope; uninstall before switching scopes. A visible opposite-scope
+installation is blocked, but this does not enumerate every other account's
+private per-user installations. Uninstall preserves `~/.harbor/config.toml`.
+PATH is not changed by default.
+
+The ZIP needs no installer or elevation. Extract the entire archive, then launch
+`harbor.exe` directly. It includes `harbor.portable` beside the executable; that
+marker selects adjacent `config.toml`, independently of the working directory.
+Copy the supplied `config.example.toml` to `config.toml` and edit it if desired.
+Without a config file, Harbor uses defaults; startup never creates or overwrites
+it, and portable mode never falls back to home-directory settings. Move the
+entire directory—including the marker, config and complete `conpty/` bundle—to
+carry the configuration. This is configuration portability, not a no-trace
+sandbox: existing release logs still go to `~/.harbor/harbor.log`, and launched
+shells may keep their own histories.
+
+The Windows release workflow accepts stable `vMAJOR.MINOR.PATCH` tags matching
+the root Cargo version exactly. MSI version fields must fit `255.255.65535`;
+unrepresentable or mismatched versions fail rather than being remapped. CI runs
+quality and packaging checks, then uploads both assets to a draft Release before
+publishing it. It does not replace an already published Release. Initial packages
+are **unsigned** and may trigger unknown-publisher or SmartScreen prompts.
+Native ARM64/x86 application packages and prerelease version mappings are not
+part of this packaging contract; their OpenConsole hosts still remain bundled.
+
+Package-construction checks do not establish all installation or live
+GitHub-publication acceptance. See [Spec 0023](.grimoire/spec/0023-windows-msi-and-portable-release.md)
+and [the release ticket set](.grimoire/ticket/0017-windows-msi-and-portable-release/README.md)
+for the required Windows lifecycle and downloaded-artifact evidence.
+
+
 ## Library Crates
 
 The reusable subsystems have crate-level usage guides:

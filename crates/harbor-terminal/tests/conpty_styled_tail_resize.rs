@@ -5,6 +5,7 @@
 
 use harbor_pty::{PtyEndpoints, ShellCommand};
 use harbor_terminal::{Cell, CellAttrs, Color, SelectionBounds, Terminal, TerminalSize};
+use std::io::Write;
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
@@ -124,18 +125,37 @@ impl LiveCmd {
         let prompt = self.prompt.clone();
         self.wait_for("PowerShell END and returned cmd prompt", |t| {
             let text = retained(t);
-            // cmd may publish one or two hard line breaks after the child exits.
-            text.contains(end) && text.trim_end().ends_with(&prompt)
+            // Only the producer's complete output line completes the handshake.
+            text.lines().any(|line| line.trim_end() == end) && text.trim_end().ends_with(&prompt)
         });
         self.quiesce("PowerShell exit");
         let text = retained(&self.terminal);
         assert!(
-            text.contains(end),
+            text.lines().any(|line| line.trim_end() == end),
             "END must be complete, not just its marker: {text:?}"
         );
         assert!(
             text.trim_end().ends_with(&self.prompt),
             "returned prompt: {suffix:?}, actual={text:?}"
+        );
+    }
+
+    fn run_powershell_source(&mut self, source: &str, end: &str) {
+        let mut script = tempfile::Builder::new()
+            .prefix("harbor-styled-tail-")
+            .suffix(".ps1")
+            .tempfile()
+            .expect("create PowerShell producer fixture");
+        script
+            .write_all(source.as_bytes())
+            .expect("write PowerShell producer fixture");
+        let script = script.into_temp_path();
+        self.run_powershell(
+            &format!(
+                "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{}\"\r",
+                script.display()
+            ),
+            end,
         );
     }
 
@@ -333,17 +353,17 @@ fn assert_fixture_rows(t: &Terminal, printed: &Cell, erased: &Cell, tail_limit: 
 
 fn minimal_fixture(sgr: &str, rows: usize) {
     let mut live = LiveCmd::new(rows);
-    // Inline script avoids temporary files. CJK is built as a scalar so the
-    // cmd input encoding cannot silently turn this into an ASCII-only fixture.
+    // Keep source ASCII for PowerShell 5.1's legacy file decoding; the
+    // producer constructs the wide glyph as a scalar at runtime.
     let history = if rows == 6 {
         "1..30 | ForEach-Object { [Console]::Out.WriteLine(('HISTORY_' + $_)) }; "
     } else {
         ""
     };
-    let command = format!(
-        "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $e=[char]27; [Console]::Out.Write($e+'[0m'+$e+'[2J'+$e+'[H'); {history}[Console]::Out.WriteLine(('PRINT:A    '+[char]0x754C+'    B'+$e+'[{sgr}m'+(' '*65)+$e+'[0m')); [Console]::Out.WriteLine(('ERASE:AB'+$e+'[{sgr}m'+$e+'[K'+$e+'[0m')); [Console]::Out.WriteLine('END_MINIMAL');\"\r"
+    let source = format!(
+        "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $e=[char]27; [Console]::Out.Write($e+'[0m'+$e+'[2J'+$e+'[H'); {history}[Console]::Out.WriteLine(('PRINT:A    '+[char]0x754C+'    B'+$e+'[{sgr}m'+(' '*65)+$e+'[0m')); [Console]::Out.WriteLine(('ERASE:AB'+$e+'[{sgr}m'+$e+'[K'+$e+'[0m')); [Console]::Out.WriteLine('END_MINIMAL');"
     );
-    live.run_powershell(&command, "END_MINIMAL");
+    live.run_powershell_source(&source, "END_MINIMAL");
     let print = generation_with_prefix(&live.terminal, "PRINT:A    界    B");
     let erase = generation_with_prefix(&live.terminal, "ERASE:AB");
     let printed = live
@@ -398,9 +418,9 @@ fn minimal_fixture(sgr: &str, rows: usize) {
 // preserve a payload somewhere in history after a producer-relative repaint.
 fn producer_edge_fixture(body: &str, expression: &str, spaces: usize, sgr: &str) {
     let mut live = LiveCmd::new(29);
-    live.run_powershell(
+    live.run_powershell_source(
         &format!(
-            "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $e=[char]27; [Console]::Out.Write($e+'[0m'+$e+'[2J'+$e+'[H'); [Console]::Out.WriteLine(({expression})+$e+'[{sgr}m'+(' '*{spaces})+$e+'[0m'); [Console]::Out.WriteLine('END_EDGE');\"\r"
+            "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $e=[char]27; [Console]::Out.Write($e+'[0m'+$e+'[2J'+$e+'[H'); [Console]::Out.WriteLine(({expression})+$e+'[{sgr}m'+(' '*{spaces})+$e+'[0m'); [Console]::Out.WriteLine('END_EDGE');"
         ),
         "END_EDGE",
     );
