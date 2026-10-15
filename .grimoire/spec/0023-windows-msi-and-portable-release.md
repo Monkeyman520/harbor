@@ -5,21 +5,11 @@
 **Date:** 2026-10-14
 **Sources:** User's Windows distribution refinement and explicit selections on 2026-10-14; [ADR 0057](../adr/0057-windows-installation-and-portable-isolation.md); [configuration context](../CONTEXT.md#toml-user-settings); [portable context](../CONTEXT.md#portable-distribution-mode); repository surfaces below.
 
-## Intent and Settled Handoff
+## Scope and Sources
 
-Make final Harbor releases usable on Windows through both an MSI installer and a fully portable ZIP. The user selected Spec → slice, not implementation or QA. Permission covers this specification, associated tickets, and qualifying Context/ADR records; no production, pipeline, Git configuration, staging or commit changes are authorized by this refinement.
+Deliver unsigned x64 MSI and full portable ZIP from one release payload. Installer technology, marker/script/product/asset names are implementation details. [ADR 0057](../adr/0057-windows-installation-and-portable-isolation.md) preserves installation/configuration boundaries; [ADR 0058](../adr/0058-release-only-static-crt.md) records release-only static CRT. The pinned [ConPTY contract](../../third_party/conpty/README.md) requires the complete adjacent bundle, explicit missing-runtime errors and no inbox/cwd/PATH fallback. Its Windows 10 build 17763 baseline is not a Harbor OS-support matrix.
 
-Confirmed choices: initial x64 application packages; selectable MSI user/machine scope; no visible cross-scope coexistence or automatic migration; marker-identified full portable configuration; local packaging plus stable-tag GitHub Release publication; unsigned initial artifacts. Ordinary release requirements live here, while ADR 0057 preserves configuration and installation boundaries. No semantic assumptions or blocking questions remain. Concrete installer tooling, marker filename, script names, product identifiers and asset filenames are not mandated: implementations must satisfy this observable contract rather than treat those details as unresolved requirements.
-
-## Verified Current Surfaces
-
-- [README](../../README.md): Windows-first operation, complete adjacent ConPTY distribution, startup-only `~/.harbor/config.toml` settings; no auto-creation or hot reload.
-- [ConPTY runtime contract](../../third_party/conpty/README.md): pinned Microsoft ConPTY `1.24.260710001`; target DLL plus x64/arm64/x86 hosts, LICENSE and VERSION. Its stated Windows 10 build 17763 baseline is a dependency baseline, not proof of Harbor's complete minimum OS support.
-- [PTY build staging](../../crates/harbor-pty/build.rs): stages all required runtime files beside profile and test executables.
-- [ConPTY loader](../../crates/harbor-pty/src/windows/conpty.rs): executable-relative `conpty/`; all hosts required; missing bundle errors, no inbox fallback, no cwd/PATH DLL search.
-- [Settings loader](../../crates/harbor-config/src/lib.rs): `default_config_path`, `load`, `load_from_path`; defaults and diagnostics on missing/unreadable/invalid TOML, scalar and palette recovery already defined.
-- [Package metadata and release profile](../../Cargo.toml), [Windows icon resource build](../../build.rs), [configuration example](../../config.example.toml).
-- [Existing Windows quality workflow](../../.github/workflows/windows-quality-gates.yml): PR checks and pinned ConPTY restore, not a release publication pipeline. This specification adds release capability without claiming those gates establish installation acceptance.
+**Stable execution aliases — 0017-windows-msi-and-portable-release:** T0001 = portable configuration/ZIP (R1/R3/R5; A1/A7–A9/A11); T0002 = selectable-scope MSI (R1/R2/R5; A1–A6/A11); T0003 = stable-tag publication (R1/R4/R5; A1/A10/A11 plus downloaded A2/A3/A7/A8). Status and dependencies survive in the [delivery record](../ticket/0017-windows-msi-and-portable-release/README.md). All remain Todo pending full acceptance.
 
 ## Requirements
 
@@ -54,11 +44,11 @@ If an opposite-scope installation is visible to the current user, block the new 
 
 ### R3. Full Portable ZIP
 
-The ZIP includes an unambiguous marker beside `harbor.exe`; marker presence selects portable mode even for direct exe launch. Configuration is `config.toml` beside that exe, not relative to the working directory. MSI contains no such marker. Preserve startup-only parsing semantics and reuse existing settings recovery: missing/unreadable/invalid TOML uses defaults with existing diagnostics, without falling back to the user's home configuration.
+The ZIP includes an unambiguous marker beside `harbor.exe`; marker presence selects portable mode even for direct exe launch. Configuration is `config.toml` beside that exe, not relative to the working directory. MSI contains no such marker. Preserve existing startup parsing/recovery semantics: missing/unreadable/invalid TOML uses defaults with existing diagnostics, without falling back to the user's home configuration.
 
 Startup must neither create nor overwrite configuration, nor read/write the existing home configuration in portable mode. Retain usable defaults when no portable config exists; document how to place/edit the supplied repository example as a portable config. Moving the extracted directory, including marker, configuration and complete runtime, to another writable location carries settings and retains operation. The directory can be read-only for configuration loading; startup must not depend on writing config files.
 
-The ZIP requires neither MSI installation nor installer registration or elevation to run. This contract isolates configuration, not arbitrary external shell behavior, shell histories, operating-system caches or every existing diagnostic/logging surface. It does not introduce settings hot reload or a new preferences editor.
+The ZIP requires neither MSI installation nor installer registration or elevation to run. This contract isolates configuration, not arbitrary external shell behavior, shell histories, operating-system caches or every existing diagnostic/logging surface. This distribution contract does not introduce hot reload or a preferences editor; separate configuration contracts govern reload.
 
 ### R4. Stable Version Identity and GitHub Release
 
@@ -73,18 +63,6 @@ Initial artifacts are unsigned. Document that Windows may present untrusted-publ
 Document local prerequisites and commands, supported x64 artifact selection, MSI scopes/upgrade/uninstall/switching, full portable identification/configuration, complete runtime layout, stable tag/version rules and unsigned limitations. Documentation must distinguish current support from requirements until implemented and verified.
 
 Record real Windows package acceptance for installation, direct/extracted launch and interactive shell operation, not just archive existence or successful MSI compilation. Capture revision/tag, version, build profile, Windows version, scope, commands/actions, expected and observed results, and PASS/FAIL/NOT RUN/BLOCKED. A dependency's OS baseline is not a newly approved Harbor OS-support matrix.
-
-## Solution and Necessary Seams
-
-Reuse the existing pinned runtime staging and TOML parsing behavior. Extend startup path selection to distinguish a marker-identified portable directory from installed/user configuration. Add package construction and stable-tag publication around the same release payload; no installer tool has been selected by this requirements contract.
-
-| Seam | Connects | Expects | Provides |
-| --- | --- | --- | --- |
-| Release payload | Cargo release output → MSI/ZIP packaging | One versioned x64 binary, complete matching adjacent ConPTY runtime | Shared distribution contents; format-specific marker and registration |
-| Startup mode | Executable location/marker → settings loading | Portable marker presence independent of cwd | exe-adjacent config or existing home config, never cross-mode fallback |
-| MSI lifecycle | Windows Installer → files/entries/settings boundary | Explicit selected scope and visible opposite-scope state | Scoped install/upgrade/uninstall without config loss or silent scope migration |
-| Version identity | Tag + root Cargo version → packaging/publication | Equal stable version, MSI-representable identity | Consistent MSI/ZIP/Release version or failure before publication |
-| Release automation | Tagged source + local packaging contract → GitHub Release | Applicable checks and both successful package outputs | Two matching release assets, no successful publication after required-check failure |
 
 ## End-to-End Acceptance
 
@@ -108,17 +86,13 @@ Inspect format payloads and installed layouts, then exercise actual Windows laun
 
 Publication may be verified in an isolated release environment with recorded actual outputs; do not label a YAML inspection or local mock as a successful GitHub Release. This document and ticket generation have not performed these implementation checks.
 
-## Decisions, Limitations and Exclusions
+## Exclusions
 
-- User confirmed all material refinement behavior above. [ADR 0057](../adr/0057-windows-installation-and-portable-isolation.md) is Testing: implementation and local automated acceptance exist, with ordinary-user evidence still pending. [ADR 0058](../adr/0058-release-only-static-crt.md) records the completed release-only static CRT policy.
-- Marker filename, installer authoring technology and product identifiers are reversible implementation details, not additional confirmed architectural constraints.
-- No native ARM64/x86 application artifacts, pre-release version mapping, automatic scope migration, global enumeration of other users' installs, or signing are promised in this delivery.
-- Full portable means portable configuration and install-free distribution, not a newly mandated no-trace sandbox for processes Harbor launches.
-- No implementation plan, production code, QA execution or deployment is authorized by the selected refinement endpoint. Execution should consume this contract through `grimoire-loop`.
+No native ARM64/x86 application artifacts, prerelease mapping, automatic scope migration, global enumeration of other users' installs, signing or no-trace sandbox for launched shells. Preserve existing Windows PR gates; release automation does not replace them.
 
 ## Execution Addendum: Final Local Evidence and External Gates
 
-The user explicitly invoked `grimoire-loop` after refinement. Scoped implementation and local automated verification are complete. This is not full release acceptance and does not authorize a commit, tag, push or public Release.
+Historical scoped implementation/local verification is complete, not full release acceptance; no commit, tag, push or public Release was performed. [Current Status](../../docs/current-status.md#windows-distribution) owns newer revision-specific results and the unresolved GPU regression. These older results do not accept a newer tree.
 
 **Snapshot:** `eed3494` plus the local implementation and test changes; no actual `v0.1.0` Git tag was created. Cargo/application/MSI version: `0.1.0`. Build: locked x64 MSVC release with static CRT. Runtime: pinned ConPTY `1.24.260710001`. Windows reported `10.0.22621.0`; the actual cmd banner reported `10.0.22621.4317`. Windows PowerShell: `5.1.22621.4249`. WiX/UI: `5.0.2`. Local .NET SDK `8.0.426` was restored under ignored `target/`, without changing global tooling.
 
@@ -137,18 +111,13 @@ The user explicitly invoked `grimoire-loop` after refinement. Scoped implementat
 | A10 | Source-reviewed stable-tag workflow uses the shared packager, read-only package job and dependent write-enabled draft/upload/publish job; both assets are required and published releases are not replaced | NOT RUN: no live tag, GitHub Actions Release or downloaded-asset acceptance |
 | A11 | Real entry-point checks rejected mismatched/prerelease tags, all MSI numeric overflow boundaries, missing/mismatched ConPTY and the earlier dynamic-CRT input. ZIP path checks, embedded MSI cabinet streams and actual late-scope native costing regression passed | PASS local failure boundaries; remote failure/publication behavior remains unexecuted |
 
-### Quality and Repaired Defects
+### Quality
 
-- `cargo fmt --all -- --check` passed. `cargo clippy --locked --all-targets --all-features -- -D warnings` passed.
-- `cargo test --locked --workspace` completed successfully, including the 17 config cases, all 16 live ConPTY resize cases, the renamed-dependency consumer fixture and doctests. The final run used process-local `CARGO_NET_OFFLINE=true` after a Windows Schannel download failure. The exact missing `yoke-derive 0.8.4` archive came from the official crate endpoint and matched its existing fixture lockfile SHA256 before entering the normal Cargo cache; versions/configuration were not changed to bypass the failure.
-- The earlier 14 resize failures were producer-startup failures: matching END inside echoed inline commands did not establish output. Complete-line handshakes and RAII temporary `.ps1` producers now drive the same VT source through the already-working file mode. All original resize/input assertions remain; terminal production behavior was not changed.
-- Real package runs repaired .NET Framework ZIP backslash paths/assembly loading, invalid MSI UI action placement and shortcut keypath ownership, and an external cabinet discarded with staging. Cabinets are now physically embedded and regression-checked.
-- Full wizard navigation exposed an additional machine-scope defect missed by quiet installs: the initial per-user session had cached scope-redirected standard folders. The MSI now obtains the physical native Program Files root through a declarative 64-bit Windows registry search and refuses an unavailable machine root. Headless costing failed before the fix and passed afterward; rendered machine destination, real GUI installation and GUI upgrades subsequently passed. See [single-package authoring](https://learn.microsoft.com/en-us/windows/win32/msi/single-package-authoring) and [registry-search schema](https://docs.firegiant.com/wix/schema/wxs/registrysearch/).
-- Earlier failed GUI-driving/timeout probes are not passing acceptance results. A later non-invasive visible-button/static-control observer completed both GUI upgrade routes. The owned timed-out transaction was allowed to finish and explicitly uninstalled; no service, account or system policy was changed.
+Historical `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets --all-features -- -D warnings`, and `cargo test --locked --workspace` passed, including 17 config cases, all 16 live ConPTY resize cases, the renamed-dependency consumer fixture and doctests. Final workspace resolution used process-local offline mode after a checksum-verified missing crate was fetched. Versions/configuration, terminal production behavior and original resize/input assertions were unchanged. These are not current-tree or broad Windows acceptance results.
 
 ### Final Artifact Binding
 
-Both files remain under `target/dist/`:
+Historical outputs were recorded under ignored `target/dist/` (availability not reverified):
 
 | Artifact | SHA256 |
 | --- | --- |

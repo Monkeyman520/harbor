@@ -9,12 +9,7 @@ This ticket set replaces Harbor's physical-row non-reflow resize with bounded, c
 
 ## Delivery Surfaces
 
-1. **Retained terminal model:** `NormalBuf` row metadata, ring movement, logical-line identity, meaningful extent, soft-wrap and truncated-head state.
-2. **Screen editing and copy:** print/erase/edit/scroll/reset metadata maintenance, logical atom decoding, wide-cell and hyperlink preservation, logical copy extraction.
-3. **Coordinates and interaction:** content-anchor resolution, cursor/saved-cursor insertion boundaries, review anchors, `SelectionModel`, `GenPos`, pointer hit testing, and snapshot projections.
-4. **Resize policy:** primary width reflow, height/live-history boundary, capacity eviction, alternate-screen rectangular resize, saved-primary reflow, margins, tabs, damage, and minimum geometry.
-5. **PTY integration:** prepared model resize, synchronous PTY resize, infallible model commit, failure rollback, and retry.
-6. **Verification:** deterministic model/E2E tests, standard quality gates, Windows shell/`nvim` sessions, clipboard checks, and large-history cost records.
+Model, copy, anchors, buffer-specific resize, PTY transaction and verification contracts are owned by [Spec 0014](../../spec/0014-content-preserving-resize-reflow.md); the historical-ID table below preserves navigation.
 
 ## Dependencies and surviving acceptance
 

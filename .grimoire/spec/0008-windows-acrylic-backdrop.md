@@ -4,7 +4,6 @@
 **Status:** Implemented
 **Date:** 2026-08-25
 
-
 **Superseded in part:** the earlier TransientWindow-first, 0.72-alpha contract in the acceptance text below is superseded by the unified backdrop tint chain (ADR 0026, amended by ADR 0028). The current four-tier chain and the configured `BACKGROUND` alpha are the reference; the earlier values are retained as historical design intent.
 ## Requirement
 
@@ -37,77 +36,53 @@ The paste confirmation window stays a separate opaque OS window with its existin
 
 ### E2E: Windows 11 acrylic through empty cells
 
-- **Given:** Harbor is running on Windows 11 build 22621 or later, with system transparency effects enabled, and the screen contains Default Background Cells.
-- **When:** The user places another window or the desktop behind Harbor.
-- **Then:** The desktop or window behind shows through empty cells as Acrylic, not as an opaque brown sheet and not as Mica.
+On Windows 11 build 22621+ with transparency effects enabled, desktop/other-window content behind Harbor appears as Acrylic through Default Background Cells, not opaque brown or Mica.
 
 ### E2E: Caption strip is acrylic without title or icon
 
-- **Given:** The main window is visible with system decorations.
-- **When:** The user inspects the caption strip and uses minimize, maximize, and close.
-- **Then:** Caption text and icon are not drawn, the strip is Acrylic (Windows 11), the three system buttons work, and the taskbar / Alt-Tab still identify the window as Harbor.
+The decorated main window shows an Acrylic Win11 caption without title/icon paint; DWM minimize/maximize/close work and taskbar/Alt-Tab still identify Harbor.
 
 ### E2E: Inverse and colored cells stay readable
 
-- **Given:** The screen contains Inverse Default Cells and cells with named or RGB backgrounds.
-- **When:** A frame is presented over Acrylic.
-- **Then:** Inverse Default Cells are opaque default-foreground fills with `BACKGROUND`-colored glyphs, and non-default backgrounds remain opaque and readable with no black holes.
+Over Acrylic, Inverse Default Cells use opaque default-foreground fills with `BACKGROUND` glyphs; named/RGB backgrounds remain opaque/readable, without black holes.
 
 ### E2E: Windows 10 client acrylic with accepted caption degradation
 
-- **Given:** Harbor is running on Windows 10 with transparency effects enabled.
-- **When:** The user places content behind the window.
-- **Then:** Default Background Cells show Acrylic through the client area; if the caption strip stays opaque, Harbor does not crash, does not custom-draw buttons, and the limitation matches documented Windows 10 Caption Degradation.
+On Windows 10 with transparency enabled, default client cells reveal Acrylic. An opaque themed caption is accepted/documented degradation, without crashes or custom buttons.
 
 ### E2E: Paste confirmation remains an opaque separate window
 
-- **Given:** A confirmable paste has opened the native confirmation window.
-- **When:** Both windows present frames.
-- **Then:** The confirmation window stays opaque with its existing present path; Acrylic does not apply to it; confirmed and cancelled paste behavior is unchanged.
+When both windows present, paste confirmation remains a separate opaque native window on its existing path, with unchanged confirm/cancel behavior and no Acrylic.
 
 ### E2E: Surface recovery still presents
 
-- **Given:** The main window is presenting with a compositing-capable alpha mode.
-- **When:** The surface is lost, outdated, resized, or temporarily zero-sized, then becomes drawable again.
-- **Then:** Runtime Frame Presentation recovers or skips per existing policy, and subsequent frames again reveal Acrylic through Default Background Cells.
+After surface loss, outdated configuration, resize or temporary zero size, Runtime follows its existing recover/skip policy; recovered frames again reveal Acrylic through default cells.
 
 ## Decisions
 
 ### Acrylic on both Windows 10 and Windows 11, not Mica
 
-- **Choice:** Win11 uses `DWMSBT_TRANSIENTWINDOW`; Win10 uses accent-policy Acrylic. Mica is rejected.
-- **Reason:** The product look is Windows Terminal-style glass that blurs windows behind Harbor, not a Mica app frame.
-- **ADR reference:** [0023-windows-acrylic-backdrop-not-mica](../adr/0023-windows-acrylic-backdrop-not-mica.md)
+See [ADR 0023](../adr/0023-windows-acrylic-backdrop-not-mica.md).
 
 ### System caption buttons with undrawn title and icon
 
-- **Choice:** Keep DWM min/max/close; suppress caption text and icon; preserve the taskbar name Harbor.
-- **Reason:** The caption strip must be Acrylic without a custom-drawn title bar.
-- **ADR reference:** [0024-system-caption-buttons-undrawn-title](../adr/0024-system-caption-buttons-undrawn-title.md)
+See [ADR 0024](../adr/0024-system-caption-buttons-undrawn-title.md).
 
 ### Windows 10 opaque caption is documented degradation, not CSD
 
-- **Choice:** If some Win10 themes leave an opaque caption, document it and do not custom-draw buttons.
-- **Reason:** ADR 0023 left an "unless caption cannot reveal acrylic" opening for CSD; ADR 0024 forbids custom caption-button painting. This spec closes that opening toward documentation, matching the confirmed Windows 10 Caption Degradation contract.
-- **ADR reference:** [0023-windows-acrylic-backdrop-not-mica](../adr/0023-windows-acrylic-backdrop-not-mica.md), [0024-system-caption-buttons-undrawn-title](../adr/0024-system-caption-buttons-undrawn-title.md)
+Document an opaque Win10 caption instead of using ADR 0023's former CSD escape: ADR 0024 forbids custom caption buttons. See [ADR 0023](../adr/0023-windows-acrylic-backdrop-not-mica.md), [ADR 0024](../adr/0024-system-caption-buttons-undrawn-title.md).
 
 ### Host owns compositor and surface config; Runtime owns present given a clear color
 
-- **Choice:** Window attributes, DWM/accent policy, GDI first-paint, and main-surface `alpha_mode` stay in the Runtime Host / `GpuContext`. Translucent clear color is injected through `WinitFrameTarget`. Terminal only changes default-background skip and Inverse Default Cell paint.
-- **Reason:** App remains long-term owner of Window and Surface; the winit integration already presents with a host-supplied clear color; Terminal must not own the HWND or surface.
-- **ADR reference:** [0015-runtime-owned-frame-presentation](../adr/0015-runtime-owned-frame-presentation.md), [0011-terminal-custompaint-gpu-injection](../adr/0011-terminal-custompaint-gpu-injection.md), [0012-consolidate-render-ui-into-terminal](../adr/0012-consolidate-render-ui-into-terminal.md)
+See [ADR 0015](../adr/0015-runtime-owned-frame-presentation.md), [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md), [ADR 0012](../adr/0012-consolidate-render-ui-into-terminal.md).
 
 ### Paste confirmation and standalone host stay opaque
 
-- **Choice:** Do not change confirmation-window alpha-mode selection or apply Acrylic to the standalone terminal adapter.
-- **Reason:** Confirmation is a separate OS window; the standalone adapter is a test/host seam, not the product window.
-- **ADR reference:** [0007-retain-separate-paste-confirmation-window](../adr/0007-retain-separate-paste-confirmation-window.md), [0009-app-cross-window-input-gate](../adr/0009-app-cross-window-input-gate.md), [0021-external-draw-scheduling-and-standalone-terminal-host](../adr/0021-external-draw-scheduling-and-standalone-terminal-host.md)
+See [ADR 0007](../adr/0007-retain-separate-paste-confirmation-window.md), [ADR 0009](../adr/0009-app-cross-window-input-gate.md), [ADR 0021](../adr/0021-external-draw-scheduling-and-standalone-terminal-host.md).
 
 ### Hardcoded translucent `BACKGROUND` until user config exists
 
-- **Choice:** Keep RGB `[0.36, 0.20, 0.08]` and set alpha to 0.72 in `harbor_config`. No TOML or runtime toggle in this spec.
-- **Reason:** User-configurable background alpha is a separate config issue; Acrylic must still have a translucent default to be visible.
-- **ADR reference:** [0023-windows-acrylic-backdrop-not-mica](../adr/0023-windows-acrylic-backdrop-not-mica.md)
+Historical preset: RGB `[0.36, 0.20, 0.08]`, alpha 0.72, with no TOML/runtime toggle in this slice; see the partial-supersession note. See [ADR 0023](../adr/0023-windows-acrylic-backdrop-not-mica.md).
 
 ## Test Plan
 

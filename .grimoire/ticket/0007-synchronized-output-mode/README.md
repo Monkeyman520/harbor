@@ -1,7 +1,6 @@
 # Synchronized Output Mode
 
 **Source:** [Spec: 0007-synchronized-output-mode.md](../../spec/0007-synchronized-output-mode.md)
-**Ticket folder:** `.grimoire/ticket/0007-synchronized-output-mode/`
 
 ## Overview
 

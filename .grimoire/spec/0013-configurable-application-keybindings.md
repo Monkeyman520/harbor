@@ -106,93 +106,61 @@ Defaults and the override format must be documented in the user-facing configura
 
 ### E2E: Defaults preserve current application behavior
 
-- **Given:** Harbor starts without a `[keybindings]` override.
-- **When:** The user invokes every documented default tab, copy, paste, and primary-screen scroll chord.
-- **Then:** Each operation matches its pre-command behavior, including tab focus policy, paste confirmation, selection copying, and primary-screen scroll boundaries.
+Without overrides, every documented default tab/copy/paste/primary-scroll chord preserves existing focus, confirmation, selection-copy and scroll-boundary behavior.
 
 ### E2E: UI command wins without PTY injection
 
-- **Given:** A live terminal has focus and a PTY writer records input.
-- **When:** The user presses a chord bound to a consuming application command such as `ctrl+t`.
-- **Then:** The command executes once, the key-down is not delivered to terminal encoding, and the PTY receives neither the chord bytes nor a synthetic marker.
+With terminal focus and captured PTY input, a consuming chord such as `ctrl+t` executes once; neither normal chord bytes nor synthetic markers reach terminal encoding/PTY.
 
 ### E2E: Conditional Ctrl+C preserves terminal interrupt
 
-- **Given:** `terminal.copy-or-interrupt` is bound to `ctrl+c`.
-- **When:** The active terminal has a non-empty selection and the chord is pressed.
-- **Then:** The selected text is copied, the command is consumed, and no interrupt byte reaches the PTY.
-
-- **Given:** The active terminal has no non-empty selection.
-- **When:** The same chord is pressed.
-- **Then:** No command is queued, the same input continues through terminal encoding, and the PTY receives the existing Ctrl+C interrupt bytes exactly once.
+`terminal.copy-or-interrupt` on `ctrl+c` copies/consumes a non-empty selection without interrupt bytes. Without a selection it queues nothing and forwards the same event, producing existing interrupt bytes exactly once.
 
 ### E2E: Always-copy remains distinct
 
-- **Given:** `terminal.copy` is bound to `ctrl+shift+c` and the active terminal has no selection.
-- **When:** The chord is pressed.
-- **Then:** Harbor consumes the chord, performs the existing empty clipboard write, and sends no bytes to the PTY.
+`terminal.copy` on `ctrl+shift+c` with no selection consumes the chord, writes empty clipboard text and sends no PTY bytes.
 
 ### E2E: Alternate-screen scroll chords pass through
 
-- **Given:** The active terminal is in the alternate screen.
-- **When:** The user presses a configured page or boundary-scroll chord.
-- **Then:** No scroll command is queued and the same key-down reaches terminal encoding.
+In alternate screen, configured page/boundary-scroll chords queue no scroll command and forward the same key-down to terminal encoding.
 
 ### E2E: Valid override replaces defaults
 
-- **Given:** Valid nested command tables rebind one command, assign multiple structured bindings to another, and assign `bindings = []` to a third.
-- **When:** Harbor starts and those old and new chords are pressed.
-- **Then:** Unspecified commands retain defaults, replacement bindings invoke their commands, old replaced chords no longer do so, every record invokes the multi-bound command, and the command with empty `bindings` has no application shortcut.
+At startup, valid nested overrides replace specified defaults, permit heterogeneous multiple bindings and unbind with `bindings = []`; omitted commands retain defaults and replaced old chords stop invoking the command.
 
 ### E2E: Invalid keybinding set falls back atomically
 
-- **Given:** A settings document contains valid non-keybinding settings and any unknown command, malformed command table or binding record, unsupported modifier or key, duplicate modifier or binding, or cross-command chord conflict.
-- **When:** Harbor loads the document.
-- **Then:** It reports an error, uses the complete default keybinding set, and still applies the valid non-keybinding settings.
+Any unknown command, malformed table/record, unsupported modifier/key, duplicate modifier/binding or cross-command conflict diagnoses an error and restores all default keybindings while preserving valid unrelated settings.
 
 ### E2E: Superseded string-array format is rejected
 
-- **Given:** A settings document uses the former `[keybindings]` command-to-string-array syntax and also contains valid non-keybinding settings.
-- **When:** Harbor loads the document.
-- **Then:** It diagnoses the keybinding shape, uses the complete default keybinding set, and still applies the valid non-keybinding settings.
+The superseded command-to-string-array syntax diagnoses an invalid keybinding shape and restores all defaults without discarding valid unrelated settings.
 
 ### E2E: All command sources share dispatch
 
-- **Given:** A tab operation can be invoked from a rail control and a registered shortcut.
-- **When:** Each source invokes the equivalent typed command.
-- **Then:** Both travel through the same dispatcher and Host execution policy while preserving source-specific parameters and focus disposition.
+Equivalent rail-control and shortcut operations use the same typed dispatcher/Host policy, preserving source-specific parameters and focus disposition.
 
 ## Decisions
 
 ### Structured per-command binding records
 
-- **Choice:** Use nested command tables with a `bindings` array of self-contained `{ modifiers = [...], key = "..." }` records.
-- **Reason:** Each binding owns its modifiers and key, avoiding positional pairing and Cartesian-product ambiguity while leaving room for future per-binding metadata.
-- **ADR reference:** [0041-structured-keybinding-configuration](../adr/0041-structured-keybinding-configuration.md)
+See [ADR 0041](../adr/0041-structured-keybinding-configuration.md).
 
 ### Typed application commands with stable external IDs
 
-- **Choice:** Persist stable string IDs and convert them to typed internal commands through an application-owned registry.
-- **Reason:** Configuration and a future palette need stable discovery identifiers, while internal execution needs exhaustive types and should not spread string dispatch through the application.
-- **ADR reference:** [0040-application-command-dispatch-and-keybinding-precedence](../adr/0040-application-command-dispatch-and-keybinding-precedence.md)
+See [ADR 0040](../adr/0040-application-command-dispatch-and-keybinding-precedence.md).
 
 ### Scoped FIFO dispatch, not a generic message bus
 
-- **Choice:** Reuse event-turn action transport and keep Host-owned execution rather than introducing publish/subscribe infrastructure.
-- **Reason:** This preserves the existing application/widget boundary and prevents unrelated lifecycle and I/O notifications from becoming commands.
-- **ADR references:** [0029-widget-store-state-action-boundary](../adr/0029-widget-store-state-action-boundary.md), [0040-application-command-dispatch-and-keybinding-precedence](../adr/0040-application-command-dispatch-and-keybinding-precedence.md)
+See [ADR 0029](../adr/0029-widget-store-state-action-boundary.md), [ADR 0040](../adr/0040-application-command-dispatch-and-keybinding-precedence.md).
 
 ### Synchronous shortcut outcome before terminal delivery
 
-- **Choice:** Action invocation returns `Consumed` or `PassThrough` synchronously; only consumed commands enter the FIFO.
-- **Reason:** The router must decide during the current key-down whether terminal delivery is allowed, while the Host must remain the eventual side-effect owner.
-- **ADR reference:** [0040-application-command-dispatch-and-keybinding-precedence](../adr/0040-application-command-dispatch-and-keybinding-precedence.md)
+See [ADR 0040](../adr/0040-application-command-dispatch-and-keybinding-precedence.md).
 
 ### Widget adapter retains native event adaptation
 
-- **Choice:** Application commands consume platform-independent key chords; the binary does not duplicate winit-to-widget key conversion.
-- **Reason:** Native event adaptation belongs to the reusable widget winit boundary, while application policy belongs to the Host.
-- **ADR reference:** [0031-widget-winit-adapter-owns-native-host-infrastructure](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md)
+See [ADR 0031](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md).
 
 ## Test Plan
 

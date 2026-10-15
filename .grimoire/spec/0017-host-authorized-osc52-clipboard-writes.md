@@ -79,17 +79,7 @@ The integration contract is deliberate; exact helper names and private struct la
 
 ### Current repository anchors
 
-These identify integration surfaces, not a claim that OSC 52 is implemented:
-
-- `crates/harbor-parser/src/params.rs`: current 4096-byte generic OSC/string limits.
-- `crates/harbor-terminal/src/parser/osc.rs`: private static routing into built-in typed actions; OSC 52 is not currently routed.
-- `crates/harbor-terminal/src/parser.rs` and `crates/harbor-terminal/src/types.rs`: parser-side output-event collection and terminal output event types.
-- `crates/harbor-app/src/tab_manager.rs`: monotonic, non-reused `TabId` and live-tab output draining.
-- `src/tab_coordinator.rs` and `src/shell.rs`: session-qualified application output handling and host lifecycle/command coordination.
-- `src/dialog.rs`: existing independent paste-confirmation window and application-owned input gate; reuse its interaction style without changing paste semantics.
-- `crates/harbor-widget/src/winit/host.rs`: `WinitWindowHost::write_clipboard` applies a write via runtime effects.
-- `crates/harbor-widget/src/effects.rs` and `crates/harbor-widget/src/winit/effects.rs`: `ClipboardEffect::Write(String)` and the native `arboard` write/failure path.
-- `README.md` startup configuration and `config.example.toml`: existing user-facing configuration documentation.
+Integration uses the existing static OSC routing, typed output events, stable tab identity, independent confirmation/input gate and widget clipboard effects. User-facing setting name, values, default and timing belong in `README.md` and `config.example.toml` (R3); source filenames are not a completion claim.
 
 ## End-to-End Tests
 
@@ -112,17 +102,7 @@ Use synthetic, non-sensitive fixture contents. Inspect actual system clipboard c
 
 ## Decisions and Source Traceability
 
-| Requirement group | Settled authority and rationale |
-| --- | --- |
-| Host-only effects, bounded writes, read denial, runtime evidence | [Issue #174](https://github.com/wangjq4214/harbor/issues/174); built-in typed-action prerequisite [#173](https://github.com/wangjq4214/harbor/issues/173) |
-| Fixed 4 MiB, no capacity configuration, OSC 52-only increased retention | [ADR 0048](../adr/0048-bounded-osc52-specific-clipboard-capacity.md); user selected 4M after discussing larger text-copy capacity |
-| Default allow, inactive/background/stale denial, configurable confirm and independent per-request window | [ADR 0049](../adr/0049-osc52-confirmation-window-and-foreground-policy.md); explicitly supersedes [ADR 0047](../adr/0047-foreground-only-host-authorized-osc52-writes.md) to allow confirmation-window focus for the pending request |
-| Target/text/base64 subset, empty clearing, latest-write replacement and diagnostic-only denial/failure | [ADR 0050](../adr/0050-osc52-write-subset-and-bounded-request-delivery.md); final user confirmation before spec generation |
-| Existing paste confirmation and cross-window paste safety | [ADR 0007](../adr/0007-retain-separate-paste-confirmation-window.md), [ADR 0009](../adr/0009-app-cross-window-input-gate.md); preserve these behaviors, do not reinterpret them as OSC 52 permission |
-| Existing terminology and startup settings contract | [Project context](../CONTEXT.md), [terminal protocol context](../CONTEXT-terminal-protocol.md): OSC 52 Host-Authorized Clipboard Write, Write Subset, Request Delivery, Parser Retention Limits, Terminal Tab, RuntimeEffects, TOML User Settings |
-| Verification and truthful status | [Validation policy](../../docs/validation.md); required gates, protocol honesty, Windows runtime evidence, and content-free artifacts |
-
-The new ADRs are Proposed because they describe accepted future behavior, not completed implementation. This document only expresses and verifies the settled sources above; a new semantic or architectural decision discovered during execution must return to discussion and knowledge recording rather than be silently invented in the spec.
+[#174](https://github.com/wangjq4214/harbor/issues/174) follows typed-action prerequisite #173. [ADR 0048](../adr/0048-bounded-osc52-specific-clipboard-capacity.md) fixes capacity; [ADR 0049](../adr/0049-osc52-confirmation-window-and-foreground-policy.md) supersedes [0047](../adr/0047-foreground-only-host-authorized-osc52-writes.md) only to permit pending-confirmation focus; [ADR 0050](../adr/0050-osc52-write-subset-and-bounded-request-delivery.md) settles subset, coalescing and content-free failure UX. Preserve paste/window safety under [ADR 0007](../adr/0007-retain-separate-paste-confirmation-window.md) and [0009](../adr/0009-app-cross-window-input-gate.md). Terms remain in [project context](../CONTEXT.md) and [protocol context](../CONTEXT-terminal-protocol.md); evidence follows [Validation](../../docs/validation.md). Approval is not runtime acceptance; new semantic or architectural choices require discussion and recording.
 
 ## Test Plan and Definition of Done
 

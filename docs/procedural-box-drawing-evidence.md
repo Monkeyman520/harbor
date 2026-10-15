@@ -4,7 +4,7 @@
 
 - **Date:** 2026-10-11
 - **Base revision:** `902b980ba6056ba1ac4e6bfcf1d1b93fc6aed738`, with the uncommitted T0001 changes listed below. No commit, staging or issue edit was performed.
-- **Requirement source:** [T0001](../.grimoire/ticket/0016-box-drawing-and-decoration-lifecycle/T0001-procedural-box-drawing.md), [Spec 0022 R1/R2 and box-specific R4](../.grimoire/spec/0022-box-drawing-and-decoration-lifecycle.md), [ADR 0056](../.grimoire/adr/0056-terminal-owned-procedural-box-drawing.md).
+- **Requirement source:** [Spec 0022 R1/R2 and box-specific R4](../.grimoire/spec/0022-box-drawing-and-decoration-lifecycle.md), [ADR 0056](../.grimoire/adr/0056-terminal-owned-procedural-box-drawing.md).
 - **Plan:** `.grimoire/plans/0025-procedural-box-drawing.md` (local Grimoire planning context).
 - **Dirty production scope:** new `crates/harbor-terminal/src/render/box_drawing.rs`; integration in `render/mod.rs`, `render/pipeline.rs`, and scalar-base suppression in `render/text.rs`.
 - **Dirty test scope:** new `render/box_drawing_tests.rs` plus the repertoire scalar-collection regression in `render/text.rs`.

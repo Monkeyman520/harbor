@@ -4,7 +4,6 @@
 **Status:** Implemented
 **Date:** 2025-07-28
 
-
 **Architecture evolution:** The consolidation remains current; later boundary changes are defined by Specs 0005 and 0012 and ADR 0031.
 ## Requirement
 
@@ -41,71 +40,49 @@ harbor-parser (VtHandler + Params + Parser)
 
 ### E2E: Terminal renders via widget tree
 
-- **Given:** App creates Terminal with PTY handles, wraps in `CustomPaint::new(draw_id)`, sets as runtime root
-- **When:** PTY outputs `b"\x1b[31mHello\x1b[0m"`
-- **Then:** Next `Runtime::encode()` call invokes Terminal's draw handler, red text "Hello" appears in the render pass
+A Terminal created with PTY handles and mounted as `CustomPaint::new(draw_id)` renders PTY output `b"\x1b[31mHello\x1b[0m"` as red Hello through its registered handler on the next `Runtime::encode()`.
 
 ### E2E: Keystroke reaches PTY
 
-- **Given:** Terminal widget has focus in widget tree
-- **When:** User presses key `A`
-- **Then:** Widget Runtime routes keyboard event → CustomPaint queues external input → App drains → Terminal writes `b"a"` to PTY output handle
+With the terminal widget focused, pressing `A` routes through Runtime → queued CustomPaint input → App drain → Terminal, writing `b"a"` to the PTY.
 
 ### E2E: Terminal resize propagates
 
-- **Given:** Terminal running at 80×24
-- **When:** Window resizes to new dimensions → widget tree re-lays out → CustomPaint rect changes → Terminal.resize() called with new grid size
-- **Then:** Terminal reallocates screen grid; next PTY output renders at new dimensions; scrollback preserved
+Resizing an 80×24 terminal changes the CustomPaint allocation and grid size; subsequent output uses the new geometry without losing scrollback.
 
 ### E2E: Multiple CustomPaint widgets coexist
 
-- **Given:** Two independent Terminal instances with different draw IDs
-- **When:** Both are added to widget tree (e.g., split panes)
-- **Then:** Each renders into its own rect via its own registered handler; events route to the correct one based on hit testing
+Two Terminals with distinct draw IDs render in their own widget allocations and receive input according to hit testing.
 
 ## Decisions
 
 ### CustomPaint registers handler during build, not app at encode time
 
-- **Choice:** `BuildCx::register_external_draw(id, handler)` during widget build. Runtime stores a map.
-- **Reason:** Eliminates app-layer glue (no per-frame callback parameter). Supports multiple CustomPaint widgets. Aligns with ADR-0005 (provider-by-ID) but shifts registration from app to widget build phase.
-- **ADR reference:** [0005-custom-paint-provider-by-id](../adr/0005-custom-paint-provider-by-id.md), [0011-terminal-custompaint-gpu-injection](../adr/0011-terminal-custompaint-gpu-injection.md)
+See [ADR 0005](../adr/0005-custom-paint-provider-by-id.md), [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md).
 
 ### Terminal does not own GpuContext
 
-- **Choice:** `GpuContext` injected by CustomPaint at render time, not stored in Terminal.
-- **Reason:** Terminal must not bind to a specific GPU device lifecycle. It uses pipelines owned internally but obtains device/queue/surface info transiently.
-- **ADR reference:** [0011-terminal-custompaint-gpu-injection](../adr/0011-terminal-custompaint-gpu-injection.md)
+See [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md).
 
 ### Parser exposes exactly three items
 
-- **Choice:** Public API = `VtHandler` trait, `Params` type, `Parser` struct. All internal state private.
-- **Reason:** Minimizes coupling surface while preserving zero-cost generic dispatch. Alternatives (event enum with allocation, closure-based with virtual dispatch) rejected for performance on the hot path.
-- **ADR reference:** [0010-parser-minimal-public-api](../adr/0010-parser-minimal-public-api.md)
+See [ADR 0010](../adr/0010-parser-minimal-public-api.md).
 
 ### Synchronous PTY I/O with std traits
 
-- **Choice:** `impl Read + Write + Send + 'static`. No tokio, no bytes crate.
-- **Reason:** Keep dependency footprint minimal. Internal thread handles blocking reads. Write latency for keystrokes is acceptable at synchronous speeds.
-- **ADR reference:** [0013-synchronous-pty-io](../adr/0013-synchronous-pty-io.md)
+See [ADR 0013](../adr/0013-synchronous-pty-io.md).
 
 ### Delete harbor-ui; paste confirmation becomes widgets
 
-- **Choice:** Dialog rendering moves to `harbor-widget` widgets or `harbor-terminal` internal modal. `harbor-ui` crate deleted.
-- **Reason:** Spec requires widget tree handles all drawing. Dedicated UI crate with separate `ModalContent` trait adds unnecessary fragmentation.
-- **ADR reference:** [0012-consolidate-render-ui-into-terminal](../adr/0012-consolidate-render-ui-into-terminal.md)
+Delete `harbor-ui`; use Widget UI or a terminal-internal modal. The manual test below still requires no separate window, conflicting with Spec 0001 and ADRs 0007/0009; this cleanup does not resolve that discrepancy. See [ADR 0012](../adr/0012-consolidate-render-ui-into-terminal.md).
 
 ### Component trait from harbor-render dissolves
 
-- **Choice:** The `Component` trait (`prepare` + `draw` + `resize`) in `harbor-render` goes away. Terminal rendering components become internal implementation details, not a public trait contract.
-- **Reason:** Terminal is the only consumer. No other crate implements `Component`. The trait was an abstraction over a single implementation.
-- **ADR reference:** [0012-consolidate-render-ui-into-terminal](../adr/0012-consolidate-render-ui-into-terminal.md)
+The public `harbor-render::Component` (`prepare`/`draw`/`resize`) dissolves: Terminal was its only consumer; render components become internal. See [ADR 0012](../adr/0012-consolidate-render-ui-into-terminal.md).
 
 ### ADR-0006 Superseded
 
-- **Choice:** ADR-0006 (CustomPaint Input Provider — App-owned input handling) is superseded. Terminal now handles its own input internally; the app only drains `external_input` and passes to Terminal without understanding event semantics.
-- **Reason:** The "App continues to own terminal input handling" clause is no longer true. Input is fully encapsulated.
-- **ADR reference:** [0006-custom-paint-input-provider](../adr/0006-custom-paint-input-provider.md) — status should be Superseded, pointing to this spec.
+Historically, this spec supersedes ADR 0006's App-owned input semantics: App drains external input while Terminal interprets it. See [ADR 0006](../adr/0006-custom-paint-input-provider.md).
 
 ## Test Plan
 

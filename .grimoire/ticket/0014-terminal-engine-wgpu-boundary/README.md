@@ -9,9 +9,7 @@ One ticket remains open: Windows, dependency, and performance acceptance for the
 
 ## Dependency Graph
 
-| Contract | Required by | Concrete reason |
-| --- | --- | --- |
-| [Spec 0016 solution boundary](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md#solution-boundary) and [necessary seams](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md#necessary-seams) | T0005 | Final acceptance must exercise the integrated engine, session, renderer, and host path. |
+[T0005](T0005-windows-dependency-and-performance-acceptance.md) requires the integrated engine/session/renderer/host path under Spec 0016's [solution](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md#solution-boundary) and [seams](../../spec/0016-terminal-engine-wgpu-renderer-boundary.md#necessary-seams).
 
 ## Recommended Order
 
@@ -19,15 +17,11 @@ One ticket remains open: Windows, dependency, and performance acceptance for the
 
 ## Coordination Risks
 
-| Tickets | Risk | Strategy |
-| --- | --- | --- |
-| T0005, all | Later changes invalidate earlier runtime/performance claims. | Capture baseline early, but attribute final evidence to the delivered revision and dirty-tree scope. |
+Later changes invalidate runtime/performance claims. Baselines may be captured early; final records identify the delivered revision and dirty-tree scope.
 
 ## Ticket Index
 
-| Ticket | File | Outcome |
-| --- | --- | --- |
-| T0005 | [T0005-windows-dependency-and-performance-acceptance.md](./T0005-windows-dependency-and-performance-acceptance.md) | Integrated behavior, quality gates and before/after evidence are accurately recorded. |
+[T0005 — Windows, Dependency and Performance Acceptance](T0005-windows-dependency-and-performance-acceptance.md) is the remaining integrated behavior, gates and before/after evidence work.
 
 ## Historical Contract Destinations
 

@@ -3,17 +3,13 @@
 **Spec ID:** 0023
 **Status:** Draft
 **Date:** 2026-10-14
-**Sources:** [Issue #172](https://github.com/wangjq4214/harbor/issues/172), the conversation contract below, [ADR 0059](../adr/0059-atomic-manual-reload-and-terminal-only-fonts.md), and [ADR 0060](../adr/0060-font-reload-uses-normal-bounded-resize.md).
+**Sources:** [Issue #172](https://github.com/wangjq4214/harbor/issues/172), [ADR 0059](../adr/0059-atomic-manual-reload-and-terminal-only-fonts.md), [ADR 0060](../adr/0060-font-reload-uses-normal-bounded-resize.md), and the approved qualifications below.
 
-## Source Authority and Conversation Contract
+## Scope and Qualifications
 
-- **C1 — Accepted recommendations:** The user accepted the proposed strict manual reload, existing command dispatch, `app.reload-configuration` with default `Ctrl+Shift+R`, non-modal application feedback plus logging, OSC RGB override preservation with resets to the latest accepted baseline, new-session-only shell changes, and restart-required clipboard policy.
-- **C2 — Font scope expansion:** The user required terminal font changes without application or PTY restart and without affecting external UI fonts. Replacing rendering resources must not recreate sessions or clear terminal buffers.
-- **C3 — Bounded retention clarification:** After font size changes, use normal geometry and rendering behavior and retain the newest content. Ordinary history eviction or rectangular-screen clipping is not a reason to reject reload. This qualifies C2's earlier unqualified content-preservation wording.
-- **C4 — Compensating-resize failure exception:** During implementation planning the user accepted an explicit recovery-failed outcome if a later-session PTY resize fails and restoring an already-resized PTY also fails. Keep the previous accepted configuration, do not report success, resume every reader, attempt geometry reconciliation, and identify unrecovered sessions. This narrow exception does not permit partial configuration publication or weaken ordinary rejection/rollback requirements. See [ADR 0061](../adr/0061-manual-reload-compensation-failure.md).
+The user approved strict manual reload (C1), expanded #172 to live terminal-only fonts (C2), qualified retention to normal bounded resize (C3; ADR 0060), and allowed only the explicit compensating-resize double-failure exception (C4; [ADR 0061](../adr/0061-manual-reload-compensation-failure.md)). These qualifications govern R1–R8. #172's published font exclusion remains unreconciled; this local contract does not modify the issue.
 
-Issue #172 still excludes font/resource transitions and leaves font work as follow-up. C2 explicitly expands that part of the issue for this contract; C3 and ADR 0060 qualify ADR 0059's retention wording. Other issue exclusions and evidence obligations remain applicable. This spec does not modify the GitHub issue or claim that its published scope has already been reconciled.
-**Follow-up scope:** [Spec 0024](./0024-watched-reload-and-launch-settings.md) records the subsequently approved default-on watcher and new-session environment/launch-directory extension for #155. Those features remain outside this initial manual slice, but are not deferred from the combined package. The manual/font/OSC/failure contract below remains applicable.
+[Spec 0024](./0024-watched-reload-and-launch-settings.md) adds default-on watching and new-session environment/directory settings to the combined #155 package, not this initial slice. [Spec 0025](./0025-portal-and-configuration-notifications.md) qualifies only notification eligibility: absent files and routine successful/no-change reloads are silent; acceptance and actionable failures remain unchanged.
 
 Existing source-backed contracts are retained where this extension does not change them: [structured application bindings](../adr/0041-structured-keybinding-configuration.md), [command precedence](../adr/0040-application-command-dispatch-and-keybinding-precedence.md), [resize/reflow](./0014-content-preserving-resize-reflow.md), [the reader barrier](../adr/0043-acknowledged-pty-resize-barrier.md), [ConPTY live-primary compatibility](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md), [terminal/application appearance separation](../adr/0058-terminal-themes-separate-from-application-appearance.md), and [validation policy](../../docs/validation.md).
 
@@ -115,21 +111,7 @@ Delivery requires focused tests, reproducible Windows runtime evidence, and the 
 
 Extend the application-owned command/configuration path rather than widget-library HMR. Treat a reload candidate and its prepared supported resources as distinct from accepted live state. The application owns the acceptance boundary and exposes the accepted binding state to UI shortcut construction instead of leaving it as an immutable startup-only root input. Preserve existing terminal/session identity while installing accepted palette and terminal font/render changes.
 
-Use the existing ownership split: `harbor-config` parses setting structure, `harbor-app` validates command semantics and presents shortcuts/results, the binary application coordinates acceptance and future factories, `harbor-text` owns terminal font selection/metrics, and `harbor-terminal` owns content, resize/PTY coordination, and terminal rendering resources. The exact internal containers and multi-session commit mechanics are not prescribed; their externally observable guarantees are.
-
-### Seams
-
-| Seam | Connects | Expects | Provides |
-| --- | --- | --- | --- |
-| Candidate settings | Configuration file / `harbor-config` → application coordinator | A freshly read complete document; typed settings, raw binding records, and diagnostics without treating fallback as live success | R2 validation evidence and a candidate that cannot silently replace malformed values with defaults |
-| Command resolution | Raw bindings / registry → application binding validation | Stable IDs, structured records, registry defaults, complete conflict checking | A complete resolved table or rejection; the same command identity used by manual invocation and future palette discovery |
-| Application acceptance | Coordinator → existing sessions, UI state, and `TerminalTabFactory` | Completely validated candidate and prepared supported changes; failure propagated from every affected instance | One coherent accepted configuration, or previously accepted configuration remaining effective under R3 |
-| Terminal font resources | `harbor-text` / terminal renderer → application preparation | Usable terminal font selection, primary metrics, and validated GPU/cache resources on their owning thread | Replacement terminal resources independent of widget UI fonts, with failures observable before acceptance |
-| Geometry and PTY | Terminal model/bridge ↔ PTY reader/control | New metrics and allocated terminal region, buffer-specific prepared resize, ordered reader barrier, actual PTY resize result | Consistent grid/render/input geometry, exactly-once byte delivery, reader resume, and existing bounded retention semantics |
-| Palette projection | Session baseline/OSC state → terminal update/renderer | Explicit RGB override ownership and latest accepted baseline | Consistent queries, cell resolution, clears, cursor/selection colors, and invalidated retained GPU state across active/inactive/alternate views |
-| User feedback | Application executor → application-visible result and diagnostics | Actual outcome and setting application classification | Non-modal actionable failure/success feedback without PTY injection or false live/restart claims |
-
-Current touchpoints are [config parsing](../../crates/harbor-config/src/lib.rs), [command resolution](../../crates/harbor-app/src/command.rs), [root binding inputs](../../crates/harbor-app/src/workspace.rs), [application execution](../../src/shell.rs), [tab factories](../../src/tab_coordinator.rs), [font policy](../../crates/harbor-text/src/font.rs), [font selection fallback](../../crates/harbor-text/src/backend/dwrite.rs), [terminal resize](../../crates/harbor-terminal/src/lib.rs), [renderer font replacement](../../crates/harbor-terminal/src/render/pipeline.rs), and [palette baseline storage](../../crates/harbor-terminal/src/screen/default_colors.rs). Existing primitives are starting surfaces, not evidence that application reload already exists.
+Use the existing ownership split: `harbor-config` parses setting structure, `harbor-app` validates command semantics and presents shortcuts/results, the binary application coordinates acceptance and future factories, `harbor-text` owns terminal font selection/metrics, and `harbor-terminal` owns content, resize/PTY coordination, and terminal rendering resources. Validate prepared terminal GPU/cache resources on their owning thread before acceptance. The exact internal containers and multi-session commit mechanics are not prescribed; their externally observable guarantees are.
 
 ## End-to-End Tests
 
@@ -200,19 +182,6 @@ Current touchpoints are [config parsing](../../crates/harbor-config/src/lib.rs),
 - **When:** Manual reload prepares terminal fonts.
 - **Then:** The former uses the established system-primary fallback with its warning and coherent effective metrics; the latter rejects reload and preserves the accepted state. Missing-glyph fallback does not change primary grid metrics or widget UI fonts.
 
-## Decisions
-
-| Material choice | Reason and authority |
-| --- | --- |
-| One manual application command with configurable default `Ctrl+Shift+R` | C1; issue #172 requires invocation without waiting for palette UI, and ADR 0040 supplies the existing dispatcher/precedence boundary |
-| Strict live candidate acceptance, separate startup recovery | Issue #172, C1, ADR 0059; malformed live input must retain the last accepted generation rather than substitute defaults |
-| Terminal font changes are live and terminal-only | C2, ADR 0059; this explicitly overrides only the issue's font/resource exclusion and preserves independent UI font ownership |
-| Normal bounded resize, not conservative losslessness checks | C3, ADR 0060, spec 0014 and ADR 0052; preserve session continuity and newest bounded content rather than every historical cell |
-| Preserve OSC RGB overlays and advance reset baseline | C1, ADR 0059, partially extending ADR 0036/0053; no new OSC syntax or cross-session inheritance |
-| Keep existing font-selection/glyph fallback | Existing System Default Font Selection context and `font.rs` / `DwriteState::open_primary_with_sink`; this spec does not introduce a new strict family-availability rule |
-| Shell changes are new-session-only; clipboard changes require restart | C1, ADR 0059; reporting application policy is not permission to restart existing children or silently change clipboard authorization |
-| Non-modal visible results plus diagnostics | C1 and issue #172; a manual operation needs actionable success/failure feedback without shell-output injection or a palette dependency |
-
 ## Test Plan and Delivery Evidence
 
 - **Focused automation:** Cover R2's complete validation and startup/live distinction, command registry/default/conflict/unbinding cases, accepted-state/factory coherence, palette override identity and alpha/reset semantics, font-independent UI metrics, bounded retention, projection/cache invalidation, and failure injection for E7. Exercise all-session acceptance, not merely individual loader/renderer return values.
@@ -233,6 +202,4 @@ Current touchpoints are [config parsing](../../crates/harbor-config/src/lib.rs),
 - New OSC color syntax, special palette indexes, changed reply limits, or broader protocol support.
 - Live clipboard-policy changes; malformed candidates cannot be partially accepted under the restart-required classification.
 
-## Completion Boundary
-
-This document is a requirements contract for the selected spec-only endpoint. It does not create an implementation plan or ticket set, implement reload, update the remote issue, or claim any product quality gate/runtime scenario has passed. The issue's font-scope discrepancy is explicitly resolved for this local contract by C2/ADR 0059 and qualified by C3/ADR 0060; remote wording remains unchanged until separately authorized.
+Implementation and acceptance status are tracked separately in the [configuration delivery record](../ticket/0017-configuration-hot-reload/README.md); this draft is not a runtime-pass claim.

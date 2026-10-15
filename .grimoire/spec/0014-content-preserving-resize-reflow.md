@@ -225,59 +225,31 @@ Preservation cases below require full styled-tail retention for retained history
 ## Decisions
 
 ### Durable logical anchors instead of physical generations
-
-- **Choice:** Logical-line identity, logical offset, and affinity are canonical; generation/column is a current-layout projection.
-- **Reason:** Width changes alter physical-row count, so retaining generation/column cannot preserve selection, review, cursor, search, or command meaning.
-- **ADR reference:** [0042-content-anchors-and-buffer-specific-resize](../adr/0042-content-anchors-and-buffer-specific-resize.md)
+Logical-line identity, offset and affinity preserve content meaning when physical row count changes; see [ADR 0042](../adr/0042-content-anchors-and-buffer-specific-resize.md).
 
 ### Explicit meaningful blanks and shared logical atoms
-
-- **Choice:** Full primary reflow discards the maximal ordinary default-style, unprotected, non-hyperlinked trailing-space suffix except what the live or saved cursor requires. It retains interior spaces and styled, protected or hyperlinked blanks. Windows ConPTY live-primary resize additionally clips style-only tail overflow to preserve producer geometry under ADR 0052. Neither discarded ordinary tails nor discarded live styled overflow are promised for later copy/selection or widening.
-- **Reason:** This avoids phantom empty continuation rows without introducing an off-grid text, copy, and cursor representation. It accepts a narrowly defined information-loss exception rather than silently claiming full round-trip preservation.
-- **ADR reference:** [0046-trim-ordinary-trailing-spaces-during-primary-reflow](../adr/0046-trim-ordinary-trailing-spaces-during-primary-reflow.md), [0042-content-anchors-and-buffer-specific-resize](../adr/0042-content-anchors-and-buffer-specific-resize.md), [0035-cell-linked-bounded-registry-for-osc8-hyperlinks](../adr/0035-cell-linked-bounded-registry-for-osc8-hyperlinks.md)
+[ADR 0046](../adr/0046-trim-ordinary-trailing-spaces-during-primary-reflow.md) accepts ordinary-tail loss rather than hidden off-grid text/cursor state. The retained-content, projection and copy rules above preserve the exceptions and [OSC 8 identity](../adr/0035-cell-linked-bounded-registry-for-osc8-hyperlinks.md).
 
 ### Preserve ring storage while extending row semantics
-
-- **Choice:** Keep the bounded ring buffer and add logical metadata rather than introducing a document, rope, or unbounded history store.
-- **Reason:** The accepted scope requires stable content semantics, not a wholesale storage rewrite.
-- **ADR reference:** [0042-content-anchors-and-buffer-specific-resize](../adr/0042-content-anchors-and-buffer-specific-resize.md)
+Keep bounded ring storage, not a document/rope rewrite ([ADR 0042](../adr/0042-content-anchors-and-buffer-specific-resize.md)).
 
 ### Producer-compatible Windows live primary
-
-- **Choice:** Apply the approved style-only tail clipping exception only to Windows ConPTY live-primary resize; preserve target-row attributes without extra tail-driven rows.
-- **Reason:** The observed 103 -> 51 resize accumulated three extra model rows, so cmd's producer-relative CUP + ED repaint overwrote the end marker and prompt. Full live-tail retention conflicts with that geometry; history/non-ConPTY and alternate policies are unchanged.
-- **ADR reference:** [0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md)
+[ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md) records why complete live styled-tail retention displaced cmd's CUP + ED repaint. Its region-specific exception above leaves history/non-ConPTY and alternate policies unchanged.
 
 ### Buffer-specific resize
-
-- **Choice:** Reflow primary content, resize alternate screens as rectangular surfaces, and independently reflow a saved primary while alternate mode is active.
-- **Reason:** Shell history is a logical text stream, while full-screen applications own two-dimensional redraw and ADR-0019 requires buffer isolation.
-- **ADR reference:** [0019-alternate-screen-buffer-isolation](../adr/0019-alternate-screen-buffer-isolation.md), [0042-content-anchors-and-buffer-specific-resize](../adr/0042-content-anchors-and-buffer-specific-resize.md)
+Primary is logical text; alternate is an application-owned rectangular surface. Saved-primary reflow preserves [whole-screen isolation](../adr/0019-alternate-screen-buffer-isolation.md).
 
 ### Preserve wide-cell invariants by requiring two columns
-
-- **Choice:** Normalize terminal width to at least two and project each width-two atom as a complete base/continuation pair.
-- **Reason:** This preserves CJK content without replacement, hidden overflow state, or renderer-side invariant repair.
-- **ADR reference:** [0016-wide-cell-normalization-during-editing](../adr/0016-wide-cell-normalization-during-editing.md), [0042-content-anchors-and-buffer-specific-resize](../adr/0042-content-anchors-and-buffer-specific-resize.md)
+The two-column minimum preserves complete width-two units without replacement or hidden overflow; retain [editing normalization](../adr/0016-wide-cell-normalization-during-editing.md).
 
 ### Prepare before PTY resize and commit infallibly
-
-- **Choice:** Allocate and validate the complete model result first, then resize PTY, then commit with an ownership swap.
-- **Reason:** PTY-first remains safe only if all subsequent model work is guaranteed not to fail; preparation makes that guarantee explicit while preserving synchronous I/O ownership.
-- **ADR reference:** [0013-synchronous-pty-io](../adr/0013-synchronous-pty-io.md), [0042-content-anchors-and-buffer-specific-resize](../adr/0042-content-anchors-and-buffer-specific-resize.md)
-
+Preparation makes all fallible model work precede PTY commit while preserving [synchronous I/O ownership](../adr/0013-synchronous-pty-io.md).
 
 ### Acknowledged barrier instead of repeated channel drains
-
-- **Choice:** Use a unique reader-barrier epoch, ordered acknowledgement, interruptible blocking read, explicit pause/resume, and bounded acquisition before resize preparation.
-- **Reason:** Repeated channel drains cannot prove that a concurrent reader has stopped publishing; unbounded acknowledgement can freeze the UI, while proceeding after timeout reopens the geometry race.
-- **ADR reference:** [0013-synchronous-pty-io](../adr/0013-synchronous-pty-io.md), [0042-content-anchors-and-buffer-specific-resize](../adr/0042-content-anchors-and-buffer-specific-resize.md), [0043-acknowledged-pty-resize-barrier](../adr/0043-acknowledged-pty-resize-barrier.md)
+[ADR 0043](../adr/0043-acknowledged-pty-resize-barrier.md): drains cannot prove the reader stopped publishing; bounded epoch acknowledgement prevents both geometry races and indefinite UI waits.
 
 ### Replace ADR-0018 only after accepted implementation
-
-- **Choice:** Treat ADR-0018 as current behavior until production reflow and its evidence are accepted; then update decision status/history explicitly.
-- **Reason:** A specification is not an implementation-completion claim.
-- **ADR reference:** [0018-non-reflow-resize-preserved-soft-wrap-markers](../adr/0018-non-reflow-resize-preserved-soft-wrap-markers.md), [0042-content-anchors-and-buffer-specific-resize](../adr/0042-content-anchors-and-buffer-specific-resize.md)
+[ADR 0018](../adr/0018-non-reflow-resize-preserved-soft-wrap-markers.md) remains the historical/current non-reflow decision until accepted implementation explicitly updates its status/history; this spec alone is not completion.
 
 ## Test Plan
 

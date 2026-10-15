@@ -114,17 +114,7 @@ Preserve the GPU-independent engine boundary of [ADR 0045](../adr/0045-gpu-indep
 
 ### Current repository anchors
 
-- `crates/harbor-terminal/src/screen/edit/pen_state.rs`: current `set_sgr`, erase-cell creation, save/restore and resets.
-- `crates/harbor-terminal/src/model.rs`: `Cell`, `CellAttrs`, blank significance and snapshots.
-- `crates/harbor-terminal/src/screen/edit/cell_writer.rs` and `cell_ops.rs`: written/erased cells, wide units and editing.
-- `crates/harbor-terminal/src/normal_buf.rs`: `CellState`, meaningful extents and retained provenance.
-- `crates/harbor-terminal/src/logical_content.rs`, `primary_reflow.rs` and `content_anchor.rs`: retained logical payload, default-tail trimming and projection.
-- `crates/harbor-terminal/src/render/decoration.rs`, `text.rs`, `background.rs`, `pipeline.rs` and `layout.rs`: effective color, decoration geometry, glyph suppression, palette/viewport invalidation and placement.
-- `crates/harbor-text/src/metrics.rs`: current font-derived underline/strikethrough measurements.
-- `crates/harbor-terminal/src/parser/status_strings.rs` and `xtgettcap.rs`: current state serialization and compile-time capability registry.
-- `crates/harbor-terminal/src/parser/tests.rs`, `incremental_tests.rs`, `screen/tests.rs` and renderer tests: regression surfaces.
-
-These are inspected integration anchors, not claims that the new behavior is implemented.
+The existing terminal pen/cell/edit, logical-content/reflow, renderer, status-string and capability-registry paths are integration surfaces, not separate owners. Keep font-derived decoration metrics and focused parser/screen/render regressions; filenames and prior inspection do not establish acceptance.
 
 ## End-to-End Tests
 
@@ -145,17 +135,7 @@ These are inspected integration anchors, not claims that the new behavior is imp
 
 ## Decisions and Traceability
 
-| Requirement | Settled authority |
-| --- | --- |
-| R1-R4 exact compatibility and presentation rules | User approval of the recommendation table; [ADR 0051](../adr/0051-modern-sgr-decoration-and-blank-retention-policy.md) |
-| Style/color forms, inverse interaction, `Su` discovery | Approved choices plus [upstream underline specification](https://github.com/kovidgoyal/kitty/blob/master/docs/underlines.rst) and [protocol checklist](../../docs/protocol/checklist.md#16-sgr-character-attributes) |
-| R5 retention/reset boundaries | Approved reflow explanation, ADR 0051, [ADR 0046](../adr/0046-trim-ordinary-trailing-spaces-during-primary-reflow.md), [ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md) approved approach A exception, [spec 0014](./0014-content-preserving-resize-reflow.md), existing state-operation semantics |
-| Hyperlink lifetime | [ADR 0035](../adr/0035-cell-linked-bounded-registry-for-osc8-hyperlinks.md) and existing renderer fallback; no hyperlink-policy change |
-| Core/render ownership | [ADR 0045](../adr/0045-gpu-independent-terminal-core-boundary.md) |
-| R6 truthful replies, no Kitty identity, R7 evidence | User approval, #162 and [Validation](../../docs/validation.md) |
-| First Neovim slice and completed prerequisites | Explicit conversation selections; historical evidence is not rewritten |
-
-No private representation or additional colorspace protocol is selected by this spec. A material new protocol, state-lifetime, ownership, or acceptance choice discovered during execution must return to clarification and durable recording before revising this contract.
+[ADR 0051](../adr/0051-modern-sgr-decoration-and-blank-retention-policy.md) records approved SGR compatibility; [ADR 0046](../adr/0046-trim-ordinary-trailing-spaces-during-primary-reflow.md), [ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md) and [spec 0014](0014-content-preserving-resize-reflow.md) govern retention/resize. [ADR 0035](../adr/0035-cell-linked-bounded-registry-for-osc8-hyperlinks.md) retains hyperlink lifetime; [ADR 0045](../adr/0045-gpu-independent-terminal-core-boundary.md) retains core/render ownership. Style/color and Su authority: approved choices, [upstream underline specification](https://github.com/kovidgoyal/kitty/blob/master/docs/underlines.rst) and [protocol checklist](../../docs/protocol/checklist.md#16-sgr-character-attributes). The first Neovim slice and completed-prerequisite premise are explicit user choices, not new test results. No private representation or additional colorspace protocol is selected; new material choices require clarification and recording.
 
 ## Verification and Definition of Done
 

@@ -1,7 +1,6 @@
 # Desktop Terminal Tabs and Declarative View Macro
 
 **Source:** [Spec: 0010-desktop-terminal-tabs-and-view-macro.md](../../spec/0010-desktop-terminal-tabs-and-view-macro.md)
-**Ticket folder:** `.grimoire/ticket/0010-desktop-terminal-tabs-and-view-macro/`
 
 ## Overview
 
@@ -13,10 +12,6 @@ One ticket remains open: the multi-tab resize, scheduling, and acceptance gate. 
 T0008 Acceptance <── Spec 0010 terminal allocation propagation (historical T0005)
                  <── Spec 0010 product behavior (historical T0007)
 ```
-
-## Recommended Order
-
-1. T0008 — Multi-Tab Resize, Scheduling, and Acceptance
 
 ## Ticket Index
 

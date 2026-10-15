@@ -28,59 +28,41 @@ The App remains the Runtime Host: it constructs and owns the terminal, drains de
 
 ### E2E: Terminal renders through the bridge
 
-- **Given:** The App owns a running Terminal and sets a `TerminalWidgetBridge` as the main Runtime's terminal component.
-- **When:** Terminal output invalidates the Runtime or layout changes the component's allocation.
-- **Then:** `CustomPaint` invokes the bridge handler, the bridge supplies a terminal `RenderTarget`, and the terminal renders in the same widget allocation, paint order, clipping, and resize behavior as before.
+With App owning Terminal and mounting its bridge, output invalidation or allocation changes invoke CustomPaint → bridge → terminal `RenderTarget`, preserving allocation, paint order, clipping and resize behavior.
 
 ### E2E: Permitted terminal input preserves semantics
 
-- **Given:** The bridge's `CustomPaint` has focus and the cross-window input gate permits terminal input.
-- **When:** The user types, composes IME text, uses pointer/wheel input, or invokes scrollback navigation.
-- **Then:** Widget input is deferred and drained as before, the bridge maps it to `TerminalEvent`, and the terminal preserves existing PTY bytes, scrollback behavior, focus behavior, and redraw consequences.
+With bridge CustomPaint focused and the gate open, deferred/drained keyboard, IME, pointer, wheel and scrollback input maps to `TerminalEvent`, preserving PTY bytes, scrolling, focus and redraw effects.
 
 ### E2E: Cross-window gate remains authoritative
 
-- **Given:** A paste-confirmation window is open while the main Runtime contains the terminal bridge.
-- **When:** The user sends keyboard input, requests another paste, scrolls, or terminal output arrives.
-- **Then:** The App continues to block keyboard input and new paste requests while allowing the existing permitted scrollback, output, and rendering behavior; the bridge does not bypass the gate.
+With paste confirmation open, App blocks terminal keyboard input and new pastes but permits existing scrollback, output and rendering; the bridge cannot bypass the gate.
 
 ### E2E: Terminal crate is widget-independent
 
-- **Given:** The workspace builds `harbor-terminal` without `harbor-widget` as a dependency.
-- **When:** The terminal crate is compiled and its tests run.
-- **Then:** It exposes only terminal-owned render and input boundary types while preserving its parser, PTY, and wgpu/winit rendering functionality.
+`harbor-terminal` builds/tests without a `harbor-widget` dependency, exposes only terminal-owned render/input boundary types, and retains parser, PTY and wgpu/winit functionality.
 
 ## Decisions
 
 ### Use terminal-owned render and input contracts
 
-- **Choice:** Replace widget types in the terminal public surface and internals with `RenderTarget`, `TerminalEvent`, and their terminal-owned supporting types; retain wgpu and winit for this phase.
-- **Reason:** This removes the actual crate dependency rather than merely wrapping its public methods, while preserving the current rendering scope. ADR 0012's statement that terminal must not depend on winit conflicts with the explicitly scoped 5.1 requirement and the existing dependency; this spec records the exception and defers UI-neutral core extraction.
-- **ADR reference:** [0012-consolidate-render-ui-into-terminal](../adr/0012-consolidate-render-ui-into-terminal.md), [0011-terminal-custompaint-gpu-injection](../adr/0011-terminal-custompaint-gpu-injection.md)
+Retain wgpu/winit for this phase. This explicitly scoped 5.1 exception conflicts with ADR 0012's no-winit rule; defer UI-neutral core extraction rather than silently resolving it. See [ADR 0012](../adr/0012-consolidate-render-ui-into-terminal.md), [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md).
 
 ### Use a root-level bridge Component
 
-- **Choice:** Add `TerminalWidgetBridge: Component` in the root project, not in `harbor-terminal`, `harbor-widget`, or a new crate.
-- **Reason:** The root is the existing owner of terminal lifecycle and the only current consumer that may depend on both crates. Composing `CustomPaint` preserves its provider-by-ID behavior without exposing `AnyView` or creating a premature reusable package.
-- **ADR reference:** [0005-custom-paint-provider-by-id](../adr/0005-custom-paint-provider-by-id.md), [0011-terminal-custompaint-gpu-injection](../adr/0011-terminal-custompaint-gpu-injection.md)
+Put the bridge in the root, the current lifecycle owner and consumer of both crates; no new crate or exposed `AnyView`. See [ADR 0005](../adr/0005-custom-paint-provider-by-id.md), [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md).
 
 ### Keep App-owned policy outside the bridge
 
-- **Choice:** The App retains deferred-input draining, cross-window gating, terminal lifecycle, and resource ownership; the bridge performs only widget-to-terminal adaptation.
-- **Reason:** Cross-window safety belongs to the only owner of both window event streams and the PTY, and terminal/window/GPU resource lifetimes remain Host responsibilities.
-- **ADR reference:** [0009-app-cross-window-input-gate](../adr/0009-app-cross-window-input-gate.md), [0015-runtime-owned-frame-presentation](../adr/0015-runtime-owned-frame-presentation.md)
+See [ADR 0009](../adr/0009-app-cross-window-input-gate.md), [ADR 0015](../adr/0015-runtime-owned-frame-presentation.md).
 
 ### Preserve behavior, not obsolete widget-typed signatures
 
-- **Choice:** Treat rendering, resize, input, scrollback, cursor, and PTY behavior as compatibility obligations while permitting source-incompatible terminal API signatures.
-- **Reason:** The prior signatures themselves carry the dependency being removed; retaining them would violate the requirement. The external paint path continues to preserve widget layout, clipping, and paint order.
-- **ADR reference:** [0005-custom-paint-provider-by-id](../adr/0005-custom-paint-provider-by-id.md), [0011-terminal-custompaint-gpu-injection](../adr/0011-terminal-custompaint-gpu-injection.md)
+Source-incompatible terminal APIs are allowed; rendering, resize, input, scrollback, cursor, PTY, layout, clipping and paint order remain compatibility obligations. See [ADR 0005](../adr/0005-custom-paint-provider-by-id.md), [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md).
 
 ### Defer cursor deadline scheduling
 
-- **Choice:** Do not add blink deadlines, scheduler changes, or external-paint deadline providers in this migration.
-- **Reason:** The requirement is a dependency-boundary refactor; frame scheduling is separately owned by the Runtime integration and must not be changed as incidental migration work.
-- **ADR reference:** [0015-runtime-owned-frame-presentation](../adr/0015-runtime-owned-frame-presentation.md)
+Do not add blink deadlines, scheduler changes or external-paint deadline providers during this dependency migration. See [ADR 0015](../adr/0015-runtime-owned-frame-presentation.md).
 
 ## Test Plan
 
