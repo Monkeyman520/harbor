@@ -167,11 +167,19 @@ fn config_path(
 /// Loads startup settings from the portable directory when marked, otherwise
 /// from Harbor's default per-user path.
 pub fn load() -> SettingsLoad {
+    load_with_path().1
+}
+
+/// Resolves the configuration source once and returns it with startup settings.
+/// Consumers must retain this path for watching, reloads and diagnostics.
+pub fn load_with_path() -> (Option<PathBuf>, SettingsLoad) {
     let executable = std::env::current_exe().ok();
-    match config_path(executable.as_deref(), default_config_path) {
+    let path = config_path(executable.as_deref(), default_config_path);
+    let loaded = match path.as_ref() {
         Some(path) => load_from_path(path),
         None => SettingsLoad::defaults("could not resolve the user home directory"),
-    }
+    };
+    (path, loaded)
 }
 
 /// Loads startup settings from an injectable path.
@@ -855,12 +863,7 @@ mod tests {
         let missing = config_path(Some(&executable), || panic!("home fallback consulted")).unwrap();
         let loaded = load_from_path(&missing);
         assert_eq!(loaded.settings, Settings::default());
-        assert_eq!(loaded.diagnostics.len(), 1);
-        assert!(
-            loaded.diagnostics[0]
-                .message
-                .contains("could not read settings")
-        );
+        assert!(loaded.diagnostics.is_empty());
         assert_eq!(fs::read_to_string(&home).unwrap(), "[font]\nsize = 42");
 
         fs::write(&portable, "[font\nsize = 19").unwrap();

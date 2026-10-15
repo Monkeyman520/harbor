@@ -19,6 +19,17 @@ function Assert-Rejected([scriptblock]$Action, [string]$Message) {
 }
 
 try {
+    . (Join-Path $repoRoot 'scripts/windows_package_version.ps1')
+    foreach ($version in @('0.0.0', '255.255.65535')) { Assert-WindowsPackageVersion $version }
+    $msiBuilder = Join-Path $repoRoot 'scripts/build_windows_msi.ps1'
+    foreach ($version in @('256.0.0', '0.256.0', '0.0.65536', '18446744073709551616.0.0', '0.1.0-rc.1')) {
+        $message = if ($version.Contains('-')) { 'Only stable' } else { 'cannot be represented' }
+        Assert-Rejected {
+            & $msiBuilder -PayloadDirectory $temporary -Version $version -OutputPath (Join-Path $temporary 'invalid.msi')
+        } $message
+    }
+    Assert-Rejected { Assert-WindowsPackageVersion '01.0.0' } 'Only stable'
+    if (Test-Path -LiteralPath (Join-Path $temporary 'invalid.msi')) { throw 'Invalid MSI version produced an artifact.' }
     Assert-Rejected { & $packager -ValidateVersionOnly -ReleaseTag 'v999.999.999' } 'must exactly match'
     Assert-Rejected { & $packager -ValidateVersionOnly -ReleaseTag 'v0.1.0-rc.1' } 'must exactly match'
 
@@ -27,6 +38,7 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $fixture 'scripts') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $fixture 'src') | Out-Null
     Copy-Item -LiteralPath $packager -Destination (Join-Path $fixture 'scripts/package_windows.ps1')
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts/windows_package_version.ps1') -Destination (Join-Path $fixture 'scripts/windows_package_version.ps1')
     [IO.File]::WriteAllText((Join-Path $fixture 'src/main.rs'), 'fn main() {}')
     foreach ($version in @('256.0.0', '0.256.0', '0.0.65536', '0.1.0-rc.1')) {
         [IO.File]::WriteAllText((Join-Path $fixture 'Cargo.toml'), "[package]`nname = 'harbor'`nversion = '$version'`nedition = '2024'`n")
@@ -84,6 +96,17 @@ try {
         $media.Execute() | Out-Null
         $embedded = 0
         try {
+            $properties = $database.OpenView('SELECT `Value` FROM `Property` WHERE `Property`=''SecureCustomProperties''')
+            $properties.Execute() | Out-Null
+            try {
+                $row = $properties.Fetch()
+                if ($null -eq $row -or 'APPLICATIONFOLDER' -cnotin $row.StringData(1).Split(';')) {
+                    throw 'The selected installation directory is not preserved across elevation.'
+                }
+            } finally {
+                $properties.Close() | Out-Null
+                [Runtime.InteropServices.Marshal]::FinalReleaseComObject($properties) | Out-Null
+            }
             while ($row = $media.Fetch()) {
                 $cabinet = $row.StringData(1)
                 if (-not $cabinet -or -not $cabinet.StartsWith('#')) {

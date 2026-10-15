@@ -12,6 +12,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'windows_package_version.ps1')
 
 function Convert-PeRvaToOffset([UInt32]$Rva, [object[]]$Sections) {
     foreach ($section in $Sections) {
@@ -86,17 +87,7 @@ try {
     $package = @($metadata.packages | Where-Object { $_.name -eq 'harbor' -and $_.manifest_path -eq (Join-Path $repoRoot 'Cargo.toml') })
     if ($package.Count -ne 1) { throw 'Could not uniquely identify the root Harbor package.' }
     $version = $package[0].version
-    if ($version -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
-        throw "Only stable MAJOR.MINOR.PATCH package versions are supported: $version"
-    }
-    $parts = $version.Split('.')
-    $bounds = @(255, 255, 65535)
-    for ($i = 0; $i -lt 3; $i++) {
-        [UInt64]$number = 0
-        if (-not [UInt64]::TryParse($parts[$i], [ref]$number) -or $number -gt $bounds[$i]) {
-            throw "Version $version cannot be represented by Windows Installer (255.255.65535 maximum)."
-        }
-    }
+    Assert-WindowsPackageVersion $version
     if ($ReleaseTag -and $ReleaseTag -cne "v$version") {
         throw "Release tag '$ReleaseTag' must exactly match stable Cargo version 'v$version'."
     }

@@ -39,6 +39,7 @@
             Message="Harbor is installed in the other installation scope. Uninstall that installation before switching between current-user and all-users installation." />
     <Launch Condition="NOT ALLUSERS OR HARBOR_NATIVE_PROGRAM_FILES"
             Message="Windows did not provide the native Program Files directory. All-users installation cannot continue." />
+    <Property Id="APPLICATIONFOLDER" Secure="yes" />
     <SetProperty Id="APPLICATIONFOLDER" Action="HarborUserDirectory"
                  Value="[LocalAppDataFolder]Apps\Harbor" Before="CostFinalize"
                  Condition="NOT APPLICATIONFOLDER AND NOT ALLUSERS" />

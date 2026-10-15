@@ -166,6 +166,7 @@ pub(crate) struct ActiveSession {
     clipboard_epoch: u64,
     tabs: TabCoordinator,
     workspace_ui: WorkspaceUiController,
+    configuration_path: Option<std::path::PathBuf>,
     configuration_watch: Option<crate::configuration_watch::ConfigurationWatch>,
     reload_feedback: crate::configuration_watch::ReloadFeedback,
     accepted_settings: harbor_config::Settings,
@@ -393,9 +394,11 @@ impl ActiveSession {
         // resurface any still-invalid candidate rather than leave a stale
         // "watching unavailable" message behind duplicate suppression.
         self.reload_feedback.clear();
-        let path = harbor_config::default_config_path()
+        let path = self
+            .configuration_path
+            .as_ref()
             .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "~/.harbor/config.toml".to_owned());
+            .unwrap_or_else(|| "configuration path unavailable".to_owned());
         let recovery = if retrying {
             "Observation will retry automatically."
         } else {
@@ -413,11 +416,11 @@ impl ActiveSession {
 
     fn reload_configuration(&mut self, automatic: bool) {
         use harbor_app::notifications::ConfigurationNoticeSource as Source;
-        let path = harbor_config::default_config_path();
+        let path = &self.configuration_path;
         let path_label = path
             .as_ref()
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "~/.harbor/config.toml (home directory unavailable)".to_owned());
+            .unwrap_or_else(|| "configuration path unavailable".to_owned());
         let viewport = self.main_host.viewport().clone();
         let result = reload_configuration_from_path(
             path.as_deref(),
@@ -872,7 +875,11 @@ impl Shell {
         }
 
         tracing::info!("creating window");
-        let loaded = harbor_config::load();
+        let (configuration_path, loaded) = harbor_config::load_with_path();
+        let startup_path_label = configuration_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "configuration path unavailable".to_owned());
         for diagnostic in &loaded.diagnostics {
             match diagnostic.level {
                 harbor_config::DiagnosticLevel::Warning => {
@@ -978,13 +985,10 @@ impl Shell {
                     logical_window_width(context.window()),
                 );
                 if !startup_notices.is_empty() {
-                    let path = harbor_config::default_config_path()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "~/.harbor/config.toml".to_owned());
                     workspace_ui.publish_configuration_notice(
                         harbor_app::notifications::ConfigurationNoticeSource::Startup,
                         Some(format!(
-                            "Configuration startup ({path}): {}",
+                            "Configuration startup ({startup_path_label}): {}",
                             startup_notices.join("; ")
                         )),
                     );
@@ -1021,6 +1025,7 @@ impl Shell {
             tabs,
             workspace_ui,
             effective_clipboard: settings.clipboard.clone(),
+            configuration_path,
             configuration_watch: None,
             reload_feedback: Default::default(),
             accepted_settings: settings,
@@ -1031,7 +1036,7 @@ impl Shell {
 
         let watch_proxy = self.event_proxy.clone();
         match crate::configuration_watch::ConfigurationWatch::start(
-            harbor_config::default_config_path(),
+            session.configuration_path.clone(),
             move || watch_proxy.send_event(AppEvent::ConfigurationWatch).is_ok(),
         ) {
             Ok(watch) => session.configuration_watch = Some(watch),

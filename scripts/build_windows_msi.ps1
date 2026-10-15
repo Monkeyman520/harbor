@@ -8,6 +8,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'windows_package_version.ps1')
 $root = Split-Path -Parent $PSScriptRoot
 $authoring = Join-Path $root 'packaging/windows'
 $toolDirectory = Join-Path $root 'target/wix'
@@ -17,17 +18,7 @@ try {
     if (-not [IO.Path]::IsPathRooted($PayloadDirectory) -or -not [IO.Path]::IsPathRooted($OutputPath)) {
         throw 'PayloadDirectory and OutputPath must be absolute paths.'
     }
-    if ($Version -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
-        throw "Version must be stable numeric MAJOR.MINOR.PATCH: $Version"
-    }
-    $parts = $Version.Split('.')
-    $bounds = @(255, 255, 65535)
-    for ($i = 0; $i -lt 3; $i++) {
-        [UInt64]$number = 0
-        if (-not [UInt64]::TryParse($parts[$i], [ref]$number) -or $number -gt $bounds[$i]) {
-            throw "Version '$Version' exceeds MSI version bounds (255.255.65535)."
-        }
-    }
+    Assert-WindowsPackageVersion $Version
     $payload = (Resolve-Path -LiteralPath $PayloadDirectory).Path
     if (-not (Test-Path -LiteralPath (Join-Path $payload 'harbor.exe') -PathType Leaf)) {
         throw 'Validated payload must contain harbor.exe.'
