@@ -919,6 +919,7 @@ dependencies = [
  "icu_properties",
  "pollster",
  "proptest",
+ "tempfile",
  "tracing",
  "unicode-width",
  "wgpu",

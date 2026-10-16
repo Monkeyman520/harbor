@@ -35,69 +35,45 @@ Every Runtime viewport must receive the window's logical size, physical size, an
 
 ### E2E: Terminal CustomPaint renders and receives input
 
-- **Given:** Harbor has initialized its main window, terminal, and main Widget Runtime.
-- **When:** The main window redraws and the terminal CustomPaint node receives focus and a terminal input event.
-- **Then:** The existing terminal renderer draws in the CustomPaint rect and clip, the App receives the deferred event, and the existing terminal input path handles it without `harbor-widget` depending on terminal renderer types.
+On main-window redraw, the focused terminal CustomPaint renders within its rect/clip and delivers deferred input to App only after Widget propagation, without terminal renderer types entering `harbor-widget`.
 
 ### E2E: Confirmable paste opens a native Widget window
 
-- **Given:** Bracketed paste is disabled and a paste contains a valid newline.
-- **When:** The user initiates that paste.
-- **Then:** The App opens or focuses a separate owned winit confirmation window rendered by its own Widget Runtime; the main window remains a terminal window rather than drawing an in-window confirmation overlay.
+With bracketed paste disabled, pasting a valid newline opens/focuses an owned native confirmation window with its own Runtime, not a main-window overlay.
 
 ### E2E: Confirm and cancel preserve paste safety
 
-- **Given:** A confirmation window is open for raw paste content.
-- **When:** The user confirms after terminal `InputModes` have changed.
-- **Then:** The App sends the unchanged raw content with the modes read at confirmation time.
-
-- **Given:** A confirmation window is open.
-- **When:** The user cancels by clicking Cancel, pressing `n`, Escape, or Enter while Cancel is focused.
-- **Then:** No paste bytes are sent to the PTY and the confirmation window closes.
+Confirming sends unchanged raw content using `InputModes` read at confirmation time, even if modes changed while the window was open. Clicking Cancel, pressing `n` or Escape, or pressing Enter on default-focused Cancel closes the window without PTY bytes.
 
 ### E2E: Cross-window modality preserves terminal safety
 
-- **Given:** A confirmation window is open.
-- **When:** The user types in the main terminal window or starts another paste.
-- **Then:** The App does not forward terminal keyboard input or create a second confirmation request; PTY output, terminal redraw, scrollback browsing, and copying remain available.
+While confirmation is open, main-window typing and new paste requests are blocked; PTY output, redraw, scrollback browsing and copying remain available.
 
 ### E2E: Preview, focus, and DPI behavior
 
-- **Given:** A confirmation window with control characters and content exceeding its preview height.
-- **When:** The user resizes or changes DPI, tabs from Cancel, scrolls the preview, and activates a button with Enter.
-- **Then:** Control characters are visibly escaped, wrapped lines and hit regions use the updated scale factor, scrolling remains within bounds, focus traversal is correct, and activation follows the focused button.
+For escaped control characters and overflowing preview content, resize/DPI changes update wrapping and hit regions; scrolling stays bounded, Tab traversal works from Cancel, and Enter activates the focused button.
 
 ## Decisions
 
 ### Keep Widget and terminal GPU pipelines independent
 
-- **Choice:** `harbor-widget` owns its instanced quad and text adapter pipelines and consumes shared CPU text data rather than terminal renderer GPU abstractions.
-- **Reason:** This preserves the crate boundary while eliminating duplicated CPU text behavior.
-- **ADR reference:** [0003-widget-independent-pipeline](../adr/0003-widget-independent-pipeline.md), [0004-widget-dependency-boundary](../adr/0004-widget-dependency-boundary.md)
+See [ADR 0003](../adr/0003-widget-independent-pipeline.md), [ADR 0004](../adr/0004-widget-dependency-boundary.md).
 
 ### Use provider-by-ID for terminal drawing and input
 
-- **Choice:** `CustomPaint` refers to an external identifier, and the App supplies drawing and deferred-input providers at Runtime boundaries.
-- **Reason:** The App retains terminal ownership while the Widget Runtime retains layout, clipping, focus, and paint-order control.
-- **ADR reference:** [0005-custom-paint-provider-by-id](../adr/0005-custom-paint-provider-by-id.md), [0006-custom-paint-input-provider](../adr/0006-custom-paint-input-provider.md)
+See [ADR 0005](../adr/0005-custom-paint-provider-by-id.md), [ADR 0006](../adr/0006-custom-paint-input-provider.md).
 
 ### Retain a native confirmation window rendered by Widget Runtime
 
-- **Choice:** The confirmation UI has its own winit window and Widget Runtime instead of a main-window overlay or the legacy `harbor-ui` renderer.
-- **Reason:** It provides the requested independent native-window behavior while moving the confirmation UI to the new Runtime.
-- **ADR reference:** [0007-retain-separate-paste-confirmation-window](../adr/0007-retain-separate-paste-confirmation-window.md), [0008-widget-runtime-for-confirmation-window](../adr/0008-widget-runtime-for-confirmation-window.md)
+See [ADR 0007](../adr/0007-retain-separate-paste-confirmation-window.md), [ADR 0008](../adr/0008-widget-runtime-for-confirmation-window.md).
 
 ### Resolve the window-scoped modality tension before implementation
 
-- **Choice:** Preserve the behavior that an open confirmation blocks terminal keyboard input and new paste requests through an App-level cross-window gate; use `FocusScope` only within the confirmation Runtime for its own controls.
-- **Reason:** ADR 0006 describes a modal `FocusScope` intercepting terminal input, which is applicable when both controls share a Runtime. ADRs 0007 and 0008 move confirmation to a separate window and Runtime, so the Runtime-local modal barrier cannot enforce cross-window terminal isolation. A follow-up ADR must supersede or narrow ADR 0006 before planning; this spec treats the newer separate-window decisions as the required feature behavior.
-- **ADR reference:** [0006-custom-paint-input-provider](../adr/0006-custom-paint-input-provider.md), [0007-retain-separate-paste-confirmation-window](../adr/0007-retain-separate-paste-confirmation-window.md), [0008-widget-runtime-for-confirmation-window](../adr/0008-widget-runtime-for-confirmation-window.md)
+Preserve the behavior that an open confirmation blocks terminal keyboard input and new paste requests through an App-level cross-window gate; use `FocusScope` only within the confirmation Runtime for its own controls. ADR 0006 describes a modal `FocusScope` intercepting terminal input, which is applicable when both controls share a Runtime. ADRs 0007 and 0008 move confirmation to a separate window and Runtime, so the Runtime-local modal barrier cannot enforce cross-window terminal isolation. A follow-up ADR must supersede or narrow ADR 0006 before planning; this spec treats the newer separate-window decisions as the required feature behavior. See [0006-custom-paint-input-provider](../adr/0006-custom-paint-input-provider.md), [0007-retain-separate-paste-confirmation-window](../adr/0007-retain-separate-paste-confirmation-window.md), [0008-widget-runtime-for-confirmation-window](../adr/0008-widget-runtime-for-confirmation-window.md)
 
 ### Superseded Phase 3 overlay requirement
 
-- **Choice:** Do not require terminal and paste-confirmation UI to share one main-window frame.
-- **Reason:** ADR 0001's Phase 3 removal of the separate window is superseded by ADR 0007; the main terminal still uses CustomPaint and single-frame composition within its own surface.
-- **ADR reference:** [0001-widget-crate-separation](../adr/0001-widget-crate-separation.md), [0007-retain-separate-paste-confirmation-window](../adr/0007-retain-separate-paste-confirmation-window.md)
+See [ADR 0001](../adr/0001-widget-crate-separation.md), [ADR 0007](../adr/0007-retain-separate-paste-confirmation-window.md).
 
 ## Test Plan
 

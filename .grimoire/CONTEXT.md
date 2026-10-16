@@ -1,12 +1,14 @@
 # Context
 
-Project domain concepts and terminology.
+Project domain concepts and terminology. Linked ADRs/specs retain detailed policy and evidence; definitions do not establish implementation or runtime acceptance.
 
 ## Domain Index
 
 | Domain | File | Entry Count |
 | --- | --- | ---: |
 | Terminal Protocol | [CONTEXT-terminal-protocol.md](./CONTEXT-terminal-protocol.md) | 41 |
+
+## Concepts
 
 ### System-Native Font Loading
 - **Definition:** A `harbor-text` strategy in which system font discovery and font data loading use operating-system APIs to avoid copying complete font files into the Rust heap.
@@ -17,11 +19,9 @@ Project domain concepts and terminology.
   - depends on System-Native Font Loading
 
 ### Terminal Font Policy
-- **Definition:** Configured font family and size govern terminal rendering and its grid metrics, independently of system UI fonts for widgets, application chrome, and dialogs. The approved live-reload extension replaces terminal font/render resources without restarting the application or PTYs, recreating sessions, or clearing buffers. Font-driven grid changes use normal bounded resize behavior, keeping newer content while permitting ordinary old-history eviction and alternate-screen boundary clipping; those effects alone do not reject reload. [ADR 0059](./adr/0059-atomic-manual-reload-and-terminal-only-fonts.md) records the boundary, qualified by [ADR 0060](./adr/0060-font-reload-uses-normal-bounded-resize.md); neither establishes implementation or runtime acceptance.
+- **Definition:** Configured family and size govern terminal rendering/grid metrics, not widget, chrome or dialog fonts. Live changes preserve application/session/PTY identity and buffers, using ordinary bounded resize rather than lossless history retention or rejection for normal eviction/clipping. See [ADR 0059](./adr/0059-atomic-manual-reload-and-terminal-only-fonts.md) and [ADR 0060](./adr/0060-font-reload-uses-normal-bounded-resize.md).
 - **Relationships:**
-  - belongs to Terminal
   - depends on System Default Font Selection
-  - references Manual Configuration Reload
 
 ### DirectWrite Font Backend
 - **Definition:** The Windows `harbor-text` backend that uses DirectWrite for font selection, system fallback, metrics, glyph resolution, and rasterization while retaining the existing WGPU glyph atlas.
@@ -34,199 +34,129 @@ Project domain concepts and terminology.
   - belongs to DirectWrite Font Backend
 
 ### Emoji Sequence Presentation
-- **Definition:** The approved, not-yet-implemented #181 presentation extension: DirectWrite shapes complete retained emoji units and Direct2D composites them into offscreen tiles consumed by the wgpu terminal renderer. Ordinary text keeps its R8 fast path; emoji color tiles use a separate bounded atlas. Oversized artwork is uniformly downscaled, positioned and finally clipped inside the model-assigned cells, never used to redefine width or copied text. Complete color, complete monochrome and unsupported-sequence fallback are distinct presentation outcomes. [ADR 0054](./adr/0054-color-emoji-offscreen-presentation.md) records the architecture and limitations.
+- **Definition:** DirectWrite whole-unit shaping and Direct2D offscreen tiles feed a separate bounded wgpu color atlas; ordinary text retains its R8 path. Uniform fitting/clipping never changes model-assigned width or copied text. Complete color, complete monochrome and unsupported fallback are distinct outcomes; see [ADR 0054](./adr/0054-color-emoji-offscreen-presentation.md).
 - **Relationships:**
   - depends on DirectWrite Font Backend
   - references System Font Fallback
 
 ### Harbor Widget Runtime
-- **Definition:** A declarative GPU UI runtime based on Rust and wgpu, managing the full UI pipeline from component state changes to retained GPU scene encoding.
+- **Definition:** Declarative Rust/wgpu UI runtime from reactive component state through reconciliation, layout and retained GPU scene encoding.
 - **Synonyms:** Widget Runtime, Runtime
 - **Relationships:**
   - contains Fiber
   - contains RenderNode
   - contains Signal
   - contains View
-  - communicates with wgpu Renderer
 
 ### Reusable Widget Component
-- **Definition:** The approved `harbor-widget` ownership boundary for UI mechanisms whose contracts remain meaningful in a non-terminal application without interpreting Harbor business types. Current consumer count or a terminal-shaped icon does not determine ownership. Product composition, command meaning and policy remain application-owned; see [ADR 0064](./adr/0064-widget-and-application-component-ownership.md).
+- **Definition:** A `harbor-widget` mechanism meaningful in a non-terminal application without interpreting Harbor business types. Consumer count and icon names do not determine ownership; product composition, command meaning and policy remain application-owned. See [ADR 0064](./adr/0064-widget-and-application-component-ownership.md).
 - **Relationships:**
   - belongs to Harbor Widget Runtime
-  - references Component
 
 ### View
 - **Definition:** An immutable UI description produced by component build methods, discardable after each build pass.
 - **Synonyms:** Widget
-- **Relationships:**
-  - consumed by Reconciler
-  - produced by Component
 
 ### Fiber
-- **Definition:** A long-lived node that retains component identity, hook/state, Signal subscriptions, child fibers, and dirty flags across rebuilds.
+- **Definition:** Long-lived component identity retaining hooks/state, Signal subscriptions, child fibers and dirty flags across rebuilds.
 - **Synonyms:** Fiber Node
-- **Relationships:**
-  - references RenderNode
-  - subscribes to Signal
-  - belongs to Harbor Widget Runtime
 
 ### RenderNode
-- **Definition:** A long-lived node holding layout results, transforms, clipping, paint order, and hit-testable regions.
-- **Relationships:**
-  - referenced by Fiber
-  - consumed by Retained Scene Graph
+- **Definition:** Retained layout, transform, clip, paint-order and hit-test geometry associated with a Fiber and consumed by the Scene Graph.
 
 ### Signal
-- **Definition:** A fine-grained, pull-based reactive state source on the UI thread; writes mark subscribed fibers dirty via dirty-flag model.
+- **Definition:** UI-thread pull-based reactive state: writes dirty subscribed fibers rather than pushing values through the tree.
 - **Synonyms:** State Cell
-- **Relationships:**
-  - subscribed by Fiber
 
 ### Key
 - **Definition:** A stable identity marker used during reconciliation to match views between build passes and preserve fiber state.
-- **Relationships:**
-  - used by Reconciler
-  - belongs to View
 
 ### Reconciliation
 - **Definition:** The process of diffing the new View tree against the existing Fiber tree, reusing fibers where type and Key match, and destroying mismatched subtrees.
 - **Synonyms:** Reconciler
-- **Relationships:**
-  - consumes View
-  - produces Fiber Tree
 
 ### BoxConstraints
-- **Definition:** A layout primitive expressing parent-imposed minimum and maximum child size, consumed by bounded parent-directed measurement followed by an atomic final-geometry commit. Positive infinity denotes an unbounded maximum, never a measured extent.
-- **Relationships:**
-  - consumed by Fiber layout through indexed child measurement
-  - preserves legacy min-wins constrain semantics; ConstrainedBox separately enforces local bounds within the authoritative parent interval
-  - see [Parent-Directed Flex Layout](../docs/flex-layout.md) for allocation, overflow and measurement limits
+- **Definition:** Parent-imposed child size intervals used by bounded parent-directed measurement and atomic geometry commit. Infinity means an unbounded maximum, never a measured extent. Legacy constrain is min-wins; ConstrainedBox enforces local bounds inside the authoritative parent interval. See [flex layout](../docs/flex-layout.md).
 
 ### Generation Arena
 - **Definition:** A slotmap-based array where each slot has a generation counter; stale references (FiberId) are detected by generation mismatch on access.
 - **Synonyms:** SlotMap
-- **Relationships:**
-  - implements FiberId safety
 
 ### Component
-- **Definition:** A trait with a single `build` method that takes `&mut BuildCx` and returns an immutable View; it owns no lifecycle state itself.
+- **Definition:** Stateless builder: `build(&mut BuildCx)` returns an immutable View; Fiber owns lifecycle state.
 - **Synonyms:** Widget Builder
-- **Relationships:**
-  - produces View
-  - referenced by Runtime
 
 ### BuildCx
-- **Definition:** The build context passed to Component::build, providing `use_state` for hook/signal creation and transparent Signal dependency tracking.
+- **Definition:** Component build context creating hook-backed Signals and tracking their dependencies during reconciliation.
 - **Relationships:**
-  - creates Signal
   - belongs to Reconciliation
 
 ### AnyView
-- **Definition:** An internal trait that enables type-erased View storage, exposing `key()` for reconciliation matching and `build()` to produce the next View.
-- **Relationships:**
-  - wrapped by View
+- **Definition:** Internal type-erased View contract exposing reconciliation identity and the next build result.
 
 ### Hook
-- **Definition:** A per-Fiber slot storing Signal state across rebuilds; `use_state` looks up the current fiber's hook list by call order via `BuildCx`'s direct fiber reference.
-- **Relationships:**
-  - stored in Fiber
-  - accessed by BuildCx
+- **Definition:** Per-Fiber Signal slot preserved by use_state call order through BuildCx.
 
 ### Primitive
 - **Definition:** A standardized retained draw input produced during widget painting. Variants cover Quad, Text, Icon, Border, OuterShadow, RoundedQuad, RoundedBorder, and External delegate rendering; a primitive is input to scene encoding rather than a guarantee of exactly one GPU draw call.
-- **Relationships:**
-  - produced by View painting
-  - consumed by Scene Graph
+
 ### SceneItem
 - **Definition:** A retained GPU-visible draw item containing a stable ID, Primitive, ancestor clip stack, and paint-order index.
-- **Relationships:**
-  - contains Primitive
-  - belongs to Scene Graph
+
 ### SceneDelta
 - **Definition:** An incremental update describing added, removed, or modified SceneItems since the last frame; consumed by the widget renderer to update GPU buffers.
-- **Relationships:**
-  - references SceneItem
-  - consumed by Widget Renderer
 
 ### Scene Graph
 - **Definition:** A retained flat ordered list of SceneItems sorted by paint order, enabling incremental GPU updates without rebuilding vertex buffers every frame.
 - **Synonyms:** Retained Scene
 - **Relationships:**
-  - contains SceneItem
-  - consumes Primitive
   - belongs to Harbor Widget Runtime
 
 ### Widget Icon
-- **Definition:** A non-interactive `harbor-widget::Icon` leaf that paints built-in Lucide vector artwork independently of text metrics and system fonts. The initial SVG subset is precompiled into signed-distance functions in the retained quad renderer, with logical sizing, tint, DPI-aware antialiasing, and ancestor clipping; it is not an arbitrary SVG loader. Interactive state and tab behavior remain in the containing control and application.
+- **Definition:** A non-interactive `harbor-widget::Icon` leaf painting built-in Lucide vector artwork independently of text metrics/fonts, with logical sizing, tint, DPI-aware antialiasing and ancestor clipping. It is not an arbitrary SVG loader; controls/application own interaction and tab policy. See [ADR 0057](./adr/0057-widget-vector-icons-without-font-glyphs.md).
 - **Synonyms:** Icon, Lucide icon
 - **Relationships:**
   - belongs to Harbor Widget Runtime
-  - produces Primitive
   - depends on Widget Renderer
 
 ### Widget Renderer
-- **Definition:** The wgpu-based instanced quad renderer inside harbor-widget that owns its own pipelines, vertex/index buffers, and processes SceneDelta to encode draw calls into a shared RenderPass.
+- **Definition:** Independent wgpu instanced-quad pipeline encoding SceneDelta into a shared render pass; owns its GPU buffers.
 - **Relationships:**
-  - consumes SceneDelta
-  - uses wgpu
   - belongs to Harbor Widget Runtime
 
 ### Layout Container
-- **Definition:** A widget that positions child widgets according to a layout algorithm: Padding Widget (inset), Row (horizontal flex), Column (vertical flex), Stack (overlay), Align (position within parent).
+- **Definition:** Positions child Views: Padding insets, Row/Column flex, Stack overlays and Align positions within the parent.
 - **Synonyms:** Container Widget
-- **Relationships:**
-  - contains Padding Widget
-  - produces View
-  - implemented by AnyView
 
 ### Padding Widget
-- **Definition:** A Flutter-style layout container with zero or one child that deducts its four insets from parent constraints before laying out the child and adds them back to its own size.
+- **Definition:** Zero-/one-child container deducting insets before child layout and adding them back to its own size.
 - **Synonyms:** Padding
-- **Relationships:**
-  - belongs to Layout Container
-  - wraps View
 
 ### Widget Decoration
 - **Definition:** A general Harbor Widget Runtime visual capability that paints a widget's box without changing its measured size or layout bounds.
-- **Relationships:**
-  - belongs to Harbor Widget Runtime
-  - implemented by BoxDecoration
 
 ### DecoratedBox
 - **Definition:** A general wrapper widget that applies BoxDecoration and ClipBehavior to one child without adding Terminal-specific visual properties.
 - **Relationships:**
   - belongs to Harbor Widget Runtime
-  - contains BoxDecoration
-  - wraps View
 
 ### BoxDecoration
-- **Definition:** A Flutter-style logical-pixel widget decoration value that defaults to no background fill and groups color, border, corner radius, and one or more shadows separately from child clipping.
+- **Definition:** Logical-pixel box styling: optional fill (none by default), uniform Border, BorderRadius and layered BoxShadows; child clipping is separate.
 - **Relationships:**
-  - implements Widget Decoration
   - contains BorderRadius
   - contains BoxShadow
-  - references ClipBehavior
-  - belongs to DecoratedBox
 
 ### BorderRadius
 - **Definition:** A box geometry value supporting both a uniform circular radius and independent radii for each of the four corners.
-- **Relationships:**
-  - belongs to BoxDecoration
 
 ### BoxShadow
 - **Definition:** An outer box shadow value with color, offset, non-negative blur radius, and optionally negative spread radius that can be layered without affecting layout.
-- **Relationships:**
-  - belongs to BoxDecoration
 
 ### Border
 - **Definition:** A first-version box outline value that applies one color and non-negative logical-pixel width uniformly to all four edges.
-- **Relationships:**
-  - belongs to BoxDecoration
 
 ### ClipBehavior
 - **Definition:** An explicit `None`, `HardEdge`, or `AntiAlias` widget policy that applies rounded bounds consistently to child painting and hit testing while leaving shadows outside the clip.
-- **Relationships:**
-  - referenced by BoxDecoration
 
 ### Decoration Paint Order
 - **Definition:** A stable widget painting sequence that draws shadows, background, child content, and border in that order.
@@ -235,24 +165,19 @@ Project domain concepts and terminology.
   - references BoxDecoration
 
 ### Portal
-- **Definition:** The root-composable escape capability in `harbor-widget`: content declared in the component tree is presented in a root-level overlay, outside its original parent's layout and clipping, without consuming terminal space. Notifications are a consumer, not its business policy owner. See [ADR 0063](./adr/0063-root-composable-escape-and-quiet-configuration-notices.md) for semantics and [ADR 0064](./adr/0064-widget-and-application-component-ownership.md) for component ownership. The implementation is present in `widgets/portal.rs`; this definition is not a runtime acceptance claim.
+- **Definition:** A root-composable widget escape: declared content appears in a root overlay outside its parent's layout/clipping without consuming terminal space. Notification policy is application-owned. See [ADR 0063](./adr/0063-root-composable-escape-and-quiet-configuration-notices.md) and [ADR 0064](./adr/0064-widget-and-application-component-ownership.md).
 - **Synonyms:** Escape component, Root-level escape component
 - **Relationships:**
   - belongs to Harbor Widget Runtime
-  - references Component
 
 ### Notification Presentation
-- **Definition:** The approved boundary between reusable widget notification content/card and close/scroll interaction, generic Portal escape, and application-owned placement, visual choices, eligibility, message meaning, duplicate suppression, recovery and dismissal history. Local pressed/scroll state belongs to the presentation component. Harbor retains top-right, non-modal, manually dismissible notices without focus theft; actionable errors do not automatically disappear. The ownership refactoring is selected, not an implementation claim; see [ADR 0064](./adr/0064-widget-and-application-component-ownership.md).
+- **Definition:** Reusable widget card/content and close/scroll interaction, with local pressed/scroll state; application-owned placement, appearance, eligibility, message meaning, deduplication, recovery and dismissal history. Harbor notices remain top-right, non-modal, manually dismissible, without focus theft or automatic expiry of actionable errors. See [ADR 0064](./adr/0064-widget-and-application-component-ownership.md).
 - **Relationships:**
   - depends on Portal
   - references Reusable Widget Component
-  - references Application UI Composition
 
 ### Viewport
 - **Definition:** The logical pixel size, physical pixel size, and scale factor passed to Runtime::encode for converting dp layout coordinates to GPU NDC.
-- **Relationships:**
-  - consumed by Widget Renderer
-  - provided by Winit Adapter
 
 ### Runtime Host
 - **Definition:** The combined hosting boundary for a native Widget Runtime, split between reusable infrastructure in `harbor-widget::winit` and application-owned event-loop, business, and process policy.
@@ -266,16 +191,13 @@ Project domain concepts and terminology.
 - **Definition:** The binary application layer that owns EventLoop/ApplicationHandler coordination, multi-window routing, application models and reducers, platform-specific window policy, and fatal/exit decisions while delegating generic window, Runtime, wgpu, presentation, and HMR lifecycle to the Winit Adapter.
 - **Synonyms:** Application Host, App
 - **Relationships:**
-  - belongs to Runtime Host
-  - communicates with Winit Adapter
   - communicates with Harbor Widget Runtime
 
 ### Application UI Composition
-- **Definition:** The approved application-layer ownership of workspace/root composition, tab UI, notification composition, confirmation UI and product appearance presets. Application-wide notification state and keybinding publication have an application-level owner rather than being tab-specific responsibilities; the current PreviewPane belongs with shared confirmation UI. `harbor-app-ui` remains a thin HMR root entry, not the destination for all UI implementation. These are responsibility boundaries, not fixed type/module names or a requirement for separate stores; see [ADR 0064](./adr/0064-widget-and-application-component-ownership.md).
+- **Definition:** Application-owned workspace/root, tab, notification, confirmation/shared PreviewPane and product-appearance composition. Notification state/keybinding publication are application-level, not tab-owned; `harbor-app-ui` stays a thin HMR root. These are responsibility groups, not mandated modules/types/stores; see [ADR 0064](./adr/0064-widget-and-application-component-ownership.md).
 - **Relationships:**
   - communicates with Application Business Host
   - depends on Reusable Widget Component
-  - references Notification Presentation
   - references Terminal Widget Bridge
 
 ### Application-Layer Widget Hot Reload
@@ -284,108 +206,87 @@ Project domain concepts and terminology.
 - **Relationships:**
   - belongs to Winit Adapter
   - communicates with Harbor Widget Runtime
-  - uses Event-Turn Action Transport
+
 ### Winit Adapter
 - **Definition:** A feature-gated `harbor-widget` native-host adapter and builder that owns per-window creation, Surface and Runtime lifetimes, generic wgpu initialization, event conversion, scheduling, presentation, and optional HMR root replacement while accepting application-provided attributes and platform hooks.
 - **Synonyms:** Winit Event Adapter, Native Widget Adapter
 - **Relationships:**
-  - belongs to Runtime Host
   - contains Harbor Widget Runtime
-  - produces UiEvent
-  - provides shared GPU resources to terminal rendering
+
 ### WinitFrameTarget
 - **Definition:** The former frame-scoped borrowed Window, Surface, Device, and Queue bundle used when the binary application owned native resources; under the adapter-owned host boundary it is removed from the application contract and may remain only as an internal implementation detail.
 - **Relationships:**
   - belongs to Winit Adapter
-  - consumed internally by Runtime Frame Presentation
+
 ### Runtime Frame Presentation
-- **Definition:** The adapter-owned frame policy that acquires the current SurfaceTexture, encodes and submits GPU work, notifies the window, and presents the completed frame using adapter-owned platform resources.
+- **Definition:** Winit Adapter-owned surface acquisition, GPU encode/submit, window notification and presentation.
 - **Relationships:**
   - belongs to Winit Adapter
-  - consumes WinitFrameTarget internally
   - extends Widget Renderer
 
 ### Runtime Integration Boundary
-- **Definition:** The public feature-gated `harbor-widget` native-host API that owns generic winit/wgpu lifecycle and optional root reload behavior while excluding terminal, paste, backdrop, and other Harbor-specific business policy.
+- **Definition:** Feature-gated generic winit/wgpu lifecycle and optional root HMR API; excludes terminal, paste, backdrop and Harbor business policy.
 - **Relationships:**
   - contains Winit Adapter
   - contains Runtime Frame Presentation
-  - communicates with application business coordination
+
 ### External Runtime Invalidation
-- **Definition:** A platform-independent signal through which Host-owned asynchronous sources mark a Runtime dirty without exposing their business-specific event types to harbor-widget.
-- **Relationships:**
-  - consumed by Harbor Widget Runtime
-  - produces RuntimeEffects
+- **Definition:** Host-asynchronous dirty signal for the runtime scheduler, without exposing source-specific business event types.
 
 ### TerminalOutputReady
-- **Definition:** An application event emitted when the PTY reader has terminal output ready for UI-thread processing.
+- **Definition:** Host event announcing PTY-reader output ready for UI-thread processing; produces External Runtime Invalidation.
 - **Relationships:**
-  - produces External Runtime Invalidation
   - belongs to Application Business Host
 
 ### Runtime Frame Scheduler
 - **Definition:** The runtime-owned state machine that converts invalidation, animation deadlines, and steady-state activity into Wait, WaitUntil, Poll, and RequestRedraw effects.
 - **Relationships:**
   - belongs to Harbor Widget Runtime
-  - consumes External Runtime Invalidation
-  - produces RuntimeEffects
 
 ### Terminal Input Semantics
-- **Definition:** The harbor-terminal responsibility for interpreting routed platform-independent keyboard and pointer events as terminal actions such as scrollback navigation, scrollbar control, and text selection.
+- **Definition:** Terminal-owned interpretation of routed platform-independent keyboard/pointer input, including selection, scrolling and scrollbar control.
 - **Relationships:**
-  - belongs to Terminal
-  - consumes UiEvent
   - implements Terminal Pointer Interaction Policy
 
 ### Terminal Pointer Interaction Policy
 - **Definition:** Harbor routes pointer input to terminal selection and scrollback controls unless an application has enabled VT mouse reporting, which takes precedence and receives the input through the PTY.
 - **Relationships:**
   - belongs to Terminal Input Semantics
-  - references Terminal Text Selection
-  - references Terminal Scrollbar
 
 ### Terminal Text Selection
 - **Definition:** A left-button drag selects terminal cells across lines and auto-scrolls at the viewport edge while preserving the resulting highlight after release.
 - **Synonyms:** text selection, selection
 - **Relationships:**
-  - belongs to Terminal
   - depends on Terminal Pointer Interaction Policy
-  - references Terminal Selection Copy Policy
   - implements Terminal Selection Lifecycle
   - implements Terminal Selection Granularity
 
 ### Terminal Selection Copy Policy
-- **Definition:** `Ctrl+Shift+C` always copies the active selection, while `Ctrl+C` copies when a selection exists and otherwise sends the terminal interrupt input to the PTY. Every successful copy clears the terminal selection.
+- **Definition:** Ctrl+Shift+C always copies (empty text without selection); Ctrl+C copies a selection or passes interrupt to PTY. Successful copy clears selection.
 - **Relationships:**
   - belongs to Terminal Text Selection
-  - communicates with Terminal
 
 ### Terminal Selection Lifecycle
-- **Definition:** Copying preserves explicit newlines while joining soft-wrapped rows; after a successful copy the selection is cleared. An existing selection is replaced by a new left-button press, cleared by Escape, and retained across output, scrolling, and focus loss. Escape is consumed locally only when it cancels selection or local pointer interaction; otherwise it is encoded and forwarded to the PTY, including in alternate-screen applications.
+- **Definition:** Copy preserves explicit newlines and joins soft wraps, then clears selection. New left press replaces it; output, scrolling and focus loss retain it. Escape cancels selection/local pointer interaction only when present; otherwise it reaches PTY, including alternate apps.
 - **Relationships:**
   - belongs to Terminal Text Selection
   - references Logical Line
   - references Soft-Wrap Marker
 
 ### Terminal Selection Granularity
-- **Definition:** Terminal text selection supports drag selection, double-click Unicode word selection using alphanumeric and underscore boundaries, and triple-click logical-line selection without crossing explicit newlines.
+- **Definition:** Drag selects cells; double-click selects Unicode alphanumeric/underscore words; triple-click selects a Logical Line without crossing explicit newlines.
 - **Relationships:**
-  - belongs to Terminal Text Selection
   - references Logical Line
 
 ### Terminal Scrollbar
 - **Definition:** The terminal scrollback control supports wheel scrolling, draggable-thumb positioning, and track-click page movement while preserving a user's review position as new output arrives.
 - **Synonyms:** scrollbar
 - **Relationships:**
-  - belongs to Terminal
   - depends on Terminal Pointer Interaction Policy
 
 ### RuntimeEffects
 - **Definition:** A platform-independent command batch returned by Runtime for its Host to apply, including redraw, cursor, IME, and clipboard requests.
 - **Synonyms:** Runtime Effects
-- **Relationships:**
-  - produced by Harbor Widget Runtime
-  - consumed by Winit Adapter and Application Business Host
 
 ### Runtime Per Window
 - **Definition:** The ownership model in which each OS window has an independent Runtime, Widget tree, and input state while GPU and text resources may be shared.
@@ -396,53 +297,32 @@ Project domain concepts and terminology.
 ### UiEvent
 - **Definition:** A single enum representing all input events (pointer, keyboard, focus) dispatched through the widget tree via capture-target-bubble routing.
 - **Synonyms:** Event
-- **Relationships:**
-  - consumed by Runtime::dispatch
-  - handled by AnyView::handle_event
 
 ### EventCtx
-- **Definition:** A command buffer passed to event handlers; supports request_focus, capture_pointer, release_pointer, invalidate_paint, and stop_propagation. Commands are applied after the event walk completes.
-- **Relationships:**
-  - produced by Runtime event routing
-  - consumed by AnyView::handle_event
+- **Definition:** Deferred event-handler commands for focus, pointer capture/release, paint invalidation and propagation; applied after routing.
 
 ### FocusScope
 - **Definition:** A widget that wraps a subtree and manages Tab/Shift+Tab focus traversal within it; supports a modal flag that blocks events from reaching widgets outside the scope.
 - **Relationships:**
   - implements AnyView
-  - manages FocusNode ordering
 
 ### Hit Testing
 - **Definition:** Reverse-paint-order traversal of the Render Tree checking point-in-rect per widget, used to determine the event target for pointer events.
-- **Relationships:**
-  - uses RenderNode layout rects
-  - invoked by event routing
 
 ### Pointer Capture
 - **Definition:** A mechanism where a widget that receives a pointer-down can request to receive all subsequent move/up/cancel events for that pointer, even if the pointer moves outside its bounds.
-- **Relationships:**
-  - managed by InputState
-  - requested via EventCtx::capture_pointer
 
 ### InputState
-- **Definition:** A per-Runtime struct holding focused FiberId, hovered FiberId, and pointer capture map; extracted from Runtime to keep it focused on scheduling.
-- **Relationships:**
-  - belongs to Runtime
-  - consumed by event routing
+- **Definition:** Per-Runtime focused/hovered FiberId and pointer captures, separate from scheduling state.
 
 ### Event Routing
-- **Definition:** The capture → target → bubble walk through the Fiber tree, where hit testing identifies the target, then handlers are called in three phases before EventCtx commands are applied.
+- **Definition:** Capture → target → bubble through Fiber, using Hit Testing and InputState; applies EventCtx commands after the walk.
 - **Synonyms:** Event Walk
-- **Relationships:**
-  - consumes UiEvent
-  - uses InputState
-  - produces EventCtx commands
 
 ### Button
-- **Definition:** A focusable widget with an onClick callback and hover/pressed/focused visual states; used for paste confirmation buttons and other clickable UI in Phase 2.
+- **Definition:** Focusable onClick widget with hover/pressed/focused states, also used by paste confirmation.
 - **Relationships:**
   - implements AnyView
-  - handles Pointer and Focus events
 
 ### Paste Confirmation Window
 - **Definition:** An OS-level secondary winit window that displays the paste confirmation UI independently of Harbor's main window.
@@ -452,258 +332,155 @@ Project domain concepts and terminology.
 
 ### Cross-Window Input Gate
 - **Definition:** An App-owned policy that blocks terminal keyboard input and new paste requests while a Paste Confirmation Window exists.
-- **Relationships:**
-  - belongs to Paste Confirmation Window
 
 ## Terminal Domain
 
 ### Terminal
-- **Definition:** A self-contained engine owning terminal screen state, VT parsing, wgpu-based rendering (text, cursor, background, scrollbar, selection), and PTY I/O. It does NOT own GpuContext, a window, or a wgpu Device — those are injected by Terminal Widget Bridge at render time.
+- **Definition:** The GPU-independent terminal engine/session abstraction owning screen state, VT parsing, input, selection, timing and PTY I/O. A separate wgpu renderer consumes coherent snapshots/damage; reading does not acknowledge damage, so skipped/failed draws retain pending changes. Window/Device ownership stays with the host, with GPU access injected through Terminal Widget Bridge. See [ADR 0045](./adr/0045-gpu-independent-terminal-core-boundary.md).
 - **Synonyms:** Terminal Engine
 - **Relationships:**
-  - contains Screen state
   - contains Wide Cell invariant
-  - contains Parser (from harbor-parser)
-  - wrapped by Terminal Widget Bridge
-  - depends on wgpu, harbor-parser, harbor-text
 
 ### Wide Cell
 - **Definition:** A terminal grid representation in which a double-width glyph occupies a base cell and an adjacent continuation cell.
 - **Synonyms:** Wide Character Cell, Wide Glyph
-- **Relationships:**
-  - belongs to Screen state
-  - normalized by Wide Cell Normalization
 
 ### Wide Cell Normalization
-- **Definition:** The shared screen-editing rule that cleans or preserves a complete wide glyph whenever an operation touches either half of it.
+- **Definition:** Screen edits touching either half clean or preserve the whole wide glyph, respecting Protected Cell and Damage Tracking invariants.
 - **Synonyms:** Wide-Cell Normalization
-- **Relationships:**
-  - applies to Screen Editing Operation
-  - preserves Damage Tracking
-  - respects Protected Cell
-  - implemented by VtEditEngine helpers
 
 ### Screen Editing Operation
-- **Definition:** A terminal screen mutation such as erase, character insertion or deletion, line movement, scrolling, or DEC rectangular editing.
-- **Relationships:**
-  - uses Wide Cell Normalization
-  - produces Damage Tracking updates
-  - references Pending-Wrap
+- **Definition:** Erase, insert/delete, line movement, scroll or rectangular mutation using Wide Cell Normalization, updating Damage Tracking and pending-wrap as applicable.
 
 ### Wide Cell Invariant
 - **Definition:** A screen-row consistency rule requiring every continuation cell to have its corresponding wide-glyph base and every wide-glyph base to have an adjacent continuation cell within the row boundary.
-- **Relationships:**
-  - validated by Screen Tests
-  - maintained by Wide Cell Normalization
 
 ### CustomPaint
-- **Definition:** A widget that explicitly marks an "escape hatch" from the normal widget rendering path. It produces a `Primitive::External` with an `ExternalDrawId`, delegating actual rendering to an externally registered handler (e.g., Terminal). During `build()`, it registers its draw handler into `BuildCx` so the Runtime can call it during encode. It may receive direct pointer-assigned focus so keyboard input, including Tab, is forwarded externally; however, it is not a Tab/Shift+Tab traversal destination, and Tab does not navigate away while it owns focus.
+- **Definition:** External-draw escape emitting Primitive::External plus ExternalDrawId and registering a handler through BuildCx. Direct pointer focus forwards keyboard input including Tab; it is not a Tab/Shift+Tab traversal destination and Tab does not leave it.
 - **Synonyms:** External Draw Widget
-- **Relationships:**
-  - produces Primitive::External
-  - registers ExternalDrawFn into Runtime via BuildCx
-  - contained by Terminal Widget Bridge
-  - receives GpuContext externally for injection
 
 ### Terminal Widget Bridge
 - **Definition:** A Component that adapts harbor-widget rendering and input types to terminal-owned boundary types while embedding a Terminal through CustomPaint.
 - **Relationships:**
-  - wraps Terminal
-  - contains CustomPaint
   - references ExternalDrawId
   - communicates with UiEvent
 
 ### ExternalDrawFn
-- **Definition:** A callback type receiving `ExternalDrawId`, `ExternalDrawContext`, frame-scoped `ExternalDrawGpu`, the active `RenderPass`, and `ExternalDrawMode`; it is registered per draw ID and invoked by Runtime during encode for each matching `Primitive::External`.
-- **Relationships:**
-  - registered by CustomPaint
-  - stored by Runtime
-  - invoked by Runtime::encode
+- **Definition:** A per-ExternalDrawId callback invoked by Runtime during scene encoding, borrowing draw context, frame-scoped GPU access and the active render pass rather than owning host resources.
+
 ### ExternalDrawId
 - **Definition:** A `u64` identifier linking a `CustomPaint` widget to its `ExternalDrawFn` handler in the Runtime.
 - **Synonyms:** Draw ID
-- **Relationships:**
-  - stored in CustomPaint
-  - key in Runtime handler map
 
 ### Autowrap (DECAWM)
-- **Definition:** The terminal mode (DEC private mode ?7) that, when enabled, causes a printable character written at the right margin to wrap the cursor to the first column of the next line.
+- **Definition:** DEC private ?7: reaching the right margin sets Pending-Wrap; the next printable first wraps to the next line.
 - **Synonyms:** DECAWM, auto-wrap, autowrap mode
-- **Relationships:**
-  - belongs to Terminal Modes
-  - controls Pending-Wrap
 
 ### Pending-Wrap
-- **Definition:** A cursor-state flag set when the cursor reaches the right margin with autowrap enabled, so that the next printable character first moves to the next line before printing.
+- **Definition:** Cursor flag deferring autowrap until the next printable; distinct from retained row Soft-Wrap Marker and remapped by resize/editing.
 - **Synonyms:** pending-wrap state, wrap pending
-- **Relationships:**
-  - controlled by Autowrap (DECAWM)
-  - stored in Cursor
-  - set by Print Path
-  - references Soft-Wrap Marker
-  - references Screen Resize
-  - references Screen Editing Operation
 
 ### IRM (Insert Mode)
-- **Definition:** The ANSI standard mode 4 (`CSI 4 h/l`) that makes a printable character insert a cell at the cursor and shift the remaining cells of the active horizontal area right before writing, instead of overwriting the cell under the cursor.
+- **Definition:** ANSI mode 4 (`CSI 4 h/l`): printing inserts and shifts cells right inside active Horizontal Margins, normalizing wide cells, rather than overwriting.
 - **Synonyms:** Insert-Replace Mode, insert mode, IRM
-- **Relationships:**
-  - belongs to Terminal Modes
-  - uses Wide Cell Normalization
-  - constrains Screen Editing Operation
-  - bounded by Horizontal Margins (DECLRMM)
 
 ### Horizontal Margins (DECLRMM)
 - **Definition:** The inclusive left/right column boundaries set by DECSLRM (`CSI Pl;Pr s`) and enabled by DEC private mode 69, which bound editing, insertion, deletion, scrolling, and cursor positioning to that column range.
 - **Synonyms:** Left/Right Margins, DECLRMM, DECSLRM
-- **Relationships:**
-  - belongs to Terminal Modes
-  - bounds IRM (Insert Mode)
-  - bounds Screen Editing Operation
 
 ### Soft-Wrap Marker
-- **Definition:** Per-row metadata on a screen or scrollback row marking it as the continuation of a logical line that wrapped at the right margin rather than ending with an explicit newline.
+- **Definition:** Per-row continuation metadata joining physical rows into a Logical Line, unlike an explicit newline; produced by printing and consumed by reflow/copy.
 - **Synonyms:** soft-wrap metadata, wrapped flag, continuation row
-- **Relationships:**
-  - belongs to Screen state
-  - set by Print Path
-  - consumed by Reflow
-  - distinguishes a wrapped row from an explicit newline
-  - references Pending-Wrap
 
 ### Logical Line
 - **Definition:** The sequence of one or more physical rows forming a single application-written line, joined by soft-wrap markers and ended by an explicit newline.
 - **Synonyms:** wrapped line
-- **Relationships:**
-  - contains Soft-Wrap Marker
 
 ### Screen Resize
-- **Definition:** A change to terminal grid geometry governed by buffer-specific resize policy: primary logical reflow and alternate rectangular resize. The approved Windows ConPTY live-primary exception follows producer geometry rather than creating rows solely from styled tail blanks; retained history and non-ConPTY primary keep full reflow rules. See [ADR 0052](./adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md); approval does not establish implementation or acceptance.
+- **Definition:** Buffer-specific grid change: primary logical reflow versus alternate rectangular resize, with a Windows ConPTY producer-owned live-primary exception defined under Reflow. Approval and runtime acceptance are separate; see [ADR 0052](./adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md).
 - **Synonyms:** resize
 - **Relationships:**
   - references Soft-Wrap Marker
-  - references Pending-Wrap
-  - references Reflow
 
 ### Reflow
-- **Definition:** The resize policy that re-wraps logical lines to the new terminal width, recomputing soft-wrap markers and column positions. Full primary reflow may discard a maximal ordinary default-style, unprotected, non-hyperlinked trailing-space suffix, retaining cursor-required spaces and styled/protected/hyperlinked blanks. The approved Windows ConPTY producer-owned live-primary exception instead follows producer text/cursor geometry: style-only tail blanks do not add rows, their attributes remain within target-row capacity, and overflow is clipped/discarded without a restoration/copy promise. Retained history and non-ConPTY primary keep full rules; alternate stays rectangular. [ADR 0052](./adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md) records approval, not an implementation pass.
+- **Definition:** Re-wraps primary Logical Lines at a new width, recomputing soft-wrap markers/projections. Full history/non-ConPTY reflow discards only ordinary default-style, unprotected, non-hyperlinked tail spaces not required by live/saved cursors; discarded tails are unavailable for widening/copy/selection ([ADR 0046](./adr/0046-trim-ordinary-trailing-spaces-during-primary-reflow.md)). Windows ConPTY live primary instead follows producer text/cursor geometry: style-only tails add no rows, attributes survive within target-row capacity, overflow is discarded without restoration/copy promises. Already-forced prefixes retain producer geometry; history/live boundaries and protected/hyperlinked content are not globally reclassified. Saved primary uses the same region policy; alternate remains rectangular ([ADR 0052](./adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md)).
 - **Synonyms:** reflow on resize, resize reflow
 - **Relationships:**
-  - consumes Soft-Wrap Marker
   - belongs to Screen Resize
 
 ### Meaningful Blank
-- **Definition:** A blank terminal cell classified as retained logical content rather than unused grid capacity or reflow-only padding. Printed ordinary spaces and styled or hyperlinked blank cells are meaningful before resize. Full primary reflow may discard ordinary default-style, unprotected, non-hyperlinked tail spaces (then unavailable to copy), except where needed for cursor insertion; styled, protected and hyperlinked blanks remain retained. A default-style erase produces non-meaningful capacity, while visibly styled erase produces meaningful blanks. The approved [ADR 0052](./adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md) exception does not globally reclassify blanks: only Windows ConPTY live-primary style-only tail overflow may be clipped to producer geometry, preserving target-row attributes but not promising discarded overflow for widening, copy or selection. History/non-ConPTY retain the full rule; concealed source text is not disposable blank capacity.
+- **Definition:** Retained logical blank content, unlike unwritten capacity or generated padding. Printed spaces and styled/hyperlinked blanks are meaningful; default-style erase leaves capacity, visibly styled erase leaves meaningful blanks. Reflow's scoped tail-loss exceptions do not make concealed source text disposable.
 - **Synonyms:** content blank, retained blank
 - **Relationships:**
   - belongs to Logical Line
-  - preserved by Reflow
-  - referenced by Terminal Text Selection
 
 ### Logical Line Identity
-- **Definition:** A monotonic, non-reused identity shared by all physical rows of one retained Logical Line. It remains stable across reflow and character edits; explicit newline, independent-row clearing, reset, and alternate-screen creation establish new identities as applicable.
+- **Definition:** Monotonic non-reused ID shared by a line's physical rows, stable under reflow/character edits. Explicit newline, independent-row clearing, reset and alternate creation establish fresh identities.
 - **Synonyms:** logical line ID
-- **Relationships:**
-  - belongs to Logical Line
-  - referenced by Content Anchor
-  - preserved by Reflow
 
 ### Content Anchor
-- **Definition:** Harbor's durable logical-position coordinate, composed of Logical Line Identity, an offset within that line, and before/after affinity. Overwrite preserves its offset, insertion or deletion before it adjusts the offset according to affinity, row movement and reflow preserve it, and destruction or eviction of its logical line invalidates it. Physical generation/column coordinates are derived display projections.
+- **Definition:** Durable logical position: Logical Line Identity, offset and before/after affinity; physical generation/column is only a projection. Overwrite preserves offset, earlier insert/delete adjusts it by affinity, movement/reflow preserves identity, and line destruction/eviction invalidates it.
 - **Synonyms:** logical anchor, stable content anchor
-- **Relationships:**
-  - references Logical Line
-  - consumes Logical Line Identity
-  - consumed by Reflow
-  - referenced by Terminal Text Selection
-  - referenced by Terminal Scrollbar
 
 ### Reflow Capacity Eviction
-- **Definition:** The resize policy that applies the existing physical-row capacity after reflow, evicts oldest physical rows first, marks a partially retained logical line as head-truncated, invalidates anchors into evicted content, and moves an evicted review anchor to the oldest retained position.
+- **Definition:** After reflow, enforce physical-row capacity oldest-first; mark partial retained lines head-truncated, invalidate evicted anchors and move evicted review to oldest retained content.
 - **Synonyms:** reflow eviction
 - **Relationships:**
-  - belongs to Reflow
   - references Content Anchor
   - references Logical Line Identity
+
 ### Logical Reflow Atom
-- **Definition:** A temporary shared reflow/copy representation containing either a one- or two-cell glyph with style, hyperlink, and meaningful-blank state, or a hard break for an explicit line boundary. Wide continuation cells and generated edge padding are projection details rather than independent logical atoms.
+- **Definition:** Temporary shared reflow/copy unit: a complete one-/two-cell glyph with style, hyperlink and meaningful-blank state, or an explicit hard break. Continuations and generated edge padding are projection details, not independent content.
 - **Synonyms:** reflow atom, logical atom stream
 - **Relationships:**
-  - belongs to Reflow
   - contains Meaningful Blank
   - references Soft-Wrap Marker
   - references Wide Cell
 
 ### Primary Height Resize Policy
-- **Definition:** A main-screen resize policy that keeps the live bottom and cursor anchored, moves removed top viewport rows into scrollback when shrinking, pulls newest history back when growing, and preserves a scrolled-back viewport through its Content Anchor. Simultaneous resize reflows width before selecting the new history/live boundary. The approved Windows ConPTY live-primary producer-geometry exception must preserve the existing `PreserveLiveTop` history/live boundary protection rather than projecting history into producer live coordinates; it does not change the full retained-history policy.
+- **Definition:** Keeps live bottom/cursor anchored: shrink moves top live rows to history, growth pulls newest history back, and review follows its Content Anchor. Width reflow precedes height allocation. ConPTY preserves the `PreserveLiveTop` history/live boundary rather than projecting history into producer live coordinates.
 - **Relationships:**
   - belongs to Screen Resize
-  - references Content Anchor
-  - differs from Alternate-Screen Buffer Isolation
 
 ### Minimum Terminal Width
 - **Definition:** Harbor normalizes terminal, model, and PTY geometry to at least two columns so every retained width-two glyph has a valid physical projection without replacement or hidden overflow storage; row count remains at least one.
-- **Relationships:**
-  - constrains Screen Resize
-  - preserves Wide Cell Invariant
-
 
 ### Transactional Terminal Resize
-- **Definition:** A resize commit protocol that first acquires an acknowledged PTY-reader barrier, parses all preceding reader chunks under the old geometry, prepares all model buffers and coordinate mappings, resizes the PTY, and installs the result with an allocation-free, infallible ownership swap. Barrier acquisition uses a bounded wait; failure resumes the reader, preserves the prior geometry, and permits retry.
+- **Definition:** Acquire PTY Resize Barrier, parse preceding chunks under old geometry, prepare all buffers/mappings, resize PTY, then commit by allocation-free infallible swap. Bounded acquisition/preparation/PTY failures retain prior geometry, resume the reader and permit retry. See [ADR 0043](./adr/0043-acknowledged-pty-resize-barrier.md).
 - **Synonyms:** prepared resize, resize transaction
 - **Relationships:**
   - belongs to Screen Resize
-  - consumes Reflow
-  - preserves Terminal geometry consistency
-
 
 ### PTY Resize Barrier
-- **Definition:** An epoch-qualified synchronization boundary in which the PTY reader publishes every chunk from reads completed before its acknowledgement, then pauses until the resize transaction explicitly resumes it. The terminal waits for acknowledgement only for a bounded interval and parses all preceding chunks under the old geometry.
+- **Definition:** Epoch-qualified reader acknowledgement after publishing every completed pre-acknowledgement read exactly once, followed by a pause until explicit resume. Acquisition is bounded; all paths resume the reader. It orders reader-observed chunks, not child-generation time for unread OS-pipe bytes.
 - **Synonyms:** acknowledged reader barrier, resize output barrier
 - **Relationships:**
   - belongs to Transactional Terminal Resize
-  - extends Synchronous PTY I/O
-  - preserves Terminal geometry consistency
 
 ### Canonical Selection Anchor
-- **Definition:** The Terminal Text Selection policy in which each endpoint stores a Content Anchor as its durable state and treats `GenPos` as a cached projection for the current physical geometry. Loss of either endpoint's logical content invalidates the complete selection.
-- **Relationships:**
-  - belongs to Terminal Text Selection
-  - consumes Content Anchor
-  - projects to physical generation/column coordinates
-
+- **Definition:** Selection endpoints durably store Content Anchors; GenPos is a current-geometry cache. Loss of either endpoint invalidates the whole selection.
 
 ### RIS
 - **Definition:** The "Reset to Initial State" control sequence (`ESC c`) that performs a hard reset, clearing the screen and resetting cursor, modes, margins, scroll region, pen state, and tab stops.
 - **Synonyms:** hard reset, full reset
-- **Relationships:**
-  - belongs to Reset Paths
-  - resets Pending-Wrap
-  - clears Soft-Wrap Marker
 
 ### DECSTR
 - **Definition:** The "Soft Terminal Reset" control sequence (`CSI ! p`) that resets terminal modes and pen state while leaving screen content intact.
 - **Synonyms:** soft reset
-- **Relationships:**
-  - belongs to Reset Paths
-  - resets Pending-Wrap
 
 ### Terminal Frame Demand
 - **Definition:** A host-neutral terminal scheduling output that reports an immediate redraw requirement and the next cursor-blink deadline to its rendering host.
 - **Relationships:**
-  - belongs to Terminal
-  - consumed by Runtime Frame Scheduler
   - communicates with Runtime Host
 
 ### Synchronized Output Mode
 - **Definition:** The DEC private mode `?2026` that batches terminal output by suppressing ordinary presentation while a saturated session-owned nesting counter is nonzero.
 - **Synonyms:** synchronized output, sync mode
 - **Relationships:**
-- belongs to Terminal
-- communicates with Runtime Frame Scheduler
-- references DECRQM
-- references RIS
-- references DECSTR
+  - communicates with Runtime Frame Scheduler
+  - references DECRQM
+  - references RIS
+  - references DECSTR
 
 ### Cursor Blink Scheduling
 - **Definition:** The timer-driven cursor policy that alternates visibility while idle and resets to visible when terminal input or cursor movement occurs.
@@ -715,244 +492,184 @@ Project domain concepts and terminology.
 - **Definition:** A widget Runtime callback registered by an external draw provider to contribute an immediate redraw request or animation deadline before the scheduler chooses its idle wait policy.
 - **Relationships:**
   - extends ExternalDrawFn
-  - consumed by Runtime Frame Scheduler
-  - implemented by Terminal Widget Bridge
 
 ### Standalone Terminal Winit/WGPU Adapter
 - **Definition:** A feature-gated public host adapter that renders Terminal directly through winit and wgpu without creating a Harbor Widget Runtime.
 - **Relationships:**
-  - wraps Terminal
-  - consumes Terminal Frame Demand
   - communicates with Runtime Host
 
 ### Windows Acrylic Backdrop
-- **Definition:** A host/compositor acrylic material behind Harbor's main window, selected through the platform backdrop backend. Terminal default cells use the active terminal palette independently of compositor tint; when a backdrop is unavailable, the window base and terminal background fall back to opaque fills.
+- **Definition:** Host/compositor material behind the main window, independent of terminal palette and tint. Unavailable backdrop makes window base and terminal background opaque.
 - **Synonyms:** system acrylic, DWM system backdrop, DesktopAcrylicController backdrop, AccentPolicy backdrop, Windows Terminal-style acrylic
 - **Relationships:**
   - belongs to Runtime Host
   - depends on Dual Composition Target Stack
   - depends on Default Background Cell
-  - references Inverse Default Cell
   - contains System Caption Chrome
 
 ### System Caption Chrome
 - **Definition:** The DWM-drawn minimize, maximize, and close buttons on the Harbor main window, with caption text and icon left undrawn so acrylic fills the title strip.
 - **Synonyms:** system caption buttons, non-client buttons
 - **Relationships:**
-  - belongs to Windows Acrylic Backdrop
   - belongs to Runtime Host
-  - references Windows 10 Caption Degradation
 
 ### Windows 10 Caption Degradation
 - **Definition:** An accepted Windows 10 limitation where the system caption strip may remain opaque on some themes while the client area is still acrylic.
 - **Relationships:**
   - belongs to Windows Acrylic Backdrop
-  - referenced by System Caption Chrome
 
 ### Inverse Default Cell
 - **Definition:** An inverse cell whose foreground and background are both `Color::Default`, filled with the active default foreground and glyph-painted with the active default background RGB. Startup configuration and supported OSC default-color changes supply that palette.
-- **Relationships:**
-  - belongs to Terminal
-  - referenced by Windows Acrylic Backdrop
 
 ### Default Background Cell
 - **Definition:** A terminal cell whose background is `Color::Default`, revealing the terminal background layer's active palette color. Its alpha is preserved over an available backdrop and forced opaque otherwise; startup TOML and supported OSC default-color sequences determine the color, not a fixed warm-brown constant.
-- **Relationships:**
-  - belongs to Terminal
-  - referenced by Windows Acrylic Backdrop
 
 ### Terminal Window Inset
 - **Definition:** An application-level layout rule that wraps the main workspace (side rail and terminal panel) in uniform 4 logical-pixel padding. The terminal panel's own decoration and grid padding are separate.
 - **Relationships:**
   - depends on Padding Widget
-  - wraps Terminal Widget Bridge
   - belongs to Runtime Host
 
 ### Terminal Decoration Preset
 - **Definition:** The current application-level terminal appearance uses an 8dp radius, a 10%-opaque black outer shadow with 1dp downward offset and 1dp blur, zero spread, no default fill, and anti-aliased child clipping. Earlier specs retain their original preset as historical design intent.
 - **Relationships:**
-  - wraps Terminal Widget Bridge
   - contains BoxDecoration
   - references ClipBehavior
   - belongs to Runtime Host
 
 ### External Frame Appearance
 - **Definition:** A former per-runtime provider for the whole-surface clear color, removed in favor of a transparent frame clear for external-draw runtimes and host-owned base fills.
-- **Relationships:**
-  - belonged to Runtime Frame Presentation
-  - was provided by Terminal Widget Bridge
-  - replaced by Window Base Fill
 
 ### Window Base Fill
 - **Definition:** An opaque dark-gray fill owned by the root Padding element painted only when no compositor backdrop is available, tinting the window inset and rounded-corner cutouts in one paint path.
 - **Relationships:**
   - belongs to Runtime Host
-  - painted by Padding Widget
-  - replaces External Frame Appearance
 
 ### Window Backdrop Tint
-- **Definition:** Host-owned compositor styling, separate from terminal palette colors. The WASDK and AccentPolicy paths use `WindowBackdropStyle` (by default white at 0.06 tint opacity); DWM TransientWindow uses the system material. An opaque window-base fill is the final fallback. The WASDK path hosts its controller on the lower Dual Composition Target Stack target.
+- **Definition:** Host compositor style, not terminal palette: WASDK/AccentPolicy use WindowBackdropStyle (default white, 0.06 opacity); DWM TransientWindow uses system material, then opaque base fallback.
 - **Relationships:**
   - belongs to Runtime Host
   - implements Windows Acrylic Backdrop
-  - depends on Dual Composition Target Stack
-  - owns the acrylic-available veil formerly painted by Window Base Fill
 
 ### Window Backdrop Backend
-- **Definition:** A host-layer backend abstraction selected at bootstrap without exposing platform resources to terminal rendering. Implementations cover WASDK DesktopAcrylicController, DWM TransientWindow acrylic, AccentPolicy, and opaque fallback; the WASDK implementation owns its lower DesktopWindowTarget and does not export a sampleable desktop visual to the renderer.
+- **Definition:** Bootstrap host abstraction over WASDK DesktopAcrylicController, DWM TransientWindow, AccentPolicy and opaque fallback; exports no platform resources or sampleable desktop visual to Terminal.
 - **Relationships:**
   - belongs to Runtime Host
   - implements Window Backdrop Tint
   - depends on Dual Composition Target Stack
 
 ### Dual Composition Target Stack
-- **Definition:** The WASDK main-window composition path binds DesktopAcrylicController to a lower `topmost=false` DesktopWindowTarget and renders the transparent wgpu swap chain through a separate upper `topmost=true` DirectComposition target on the same HWND. Other backdrop backends do not imply this same controller stack.
+- **Definition:** WASDK-only same-HWND stack: lower topmost=false DesktopWindowTarget hosts acrylic; separate upper topmost=true DirectComposition target hosts transparent wgpu. Other backends need not use it.
 - **Synonyms:** dual-target composition, two-layer composition target stack
 - **Relationships:**
   - belongs to Runtime Host
   - implements Windows Acrylic Backdrop
-  - references Window Backdrop Tint
-  - references Window Backdrop Backend
 
 ### Rounded Clip Mask
-- **Definition:** A dest-in GPU pass (quad shader mode 2) that multiplies framebuffer RGB and alpha by rounded-rect coverage to erase external-draw pixels outside ancestor rounded clips.
+- **Definition:** Dest-in GPU coverage mask multiplying framebuffer RGB/alpha to remove external pixels outside ancestor rounded clips, revealing host/frame clear.
 - **Relationships:**
   - belongs to Widget Renderer
   - implements ClipBehavior
-  - reveals the host/frame clear where clipped pixels are erased
+
 ### Manual Configuration Reload
-- **Definition:** The approved application-command transaction that validates a complete TOML candidate and prepares supported resources before publishing a coherent accepted configuration to existing applicable sessions and future-instance factories. Failure retains the last accepted configuration rather than applying startup fallback. It is distinct from development-only widget-library HMR; terminal font changes preserve terminal/session identity and use ordinary bounded resize retention rather than resetting buffers, while OSC RGB overrides remain above a newly accepted reset baseline. See [ADR 0059](./adr/0059-atomic-manual-reload-and-terminal-only-fonts.md) and its retention clarification in [ADR 0060](./adr/0060-font-reload-uses-normal-bounded-resize.md); the implementation is present, while interactive Windows runtime acceptance remains NOT RUN as stated in [Current Status](../docs/current-status.md).
+- **Definition:** Application-command transaction validating a complete TOML candidate and preparing resources before coherent publication to applicable existing sessions and future factories. Rejection retains accepted settings, never startup fallback; it is not widget HMR. Fonts use Terminal Font Policy; OSC overrides use the latest accepted reset baseline. See [ADR 0059](./adr/0059-atomic-manual-reload-and-terminal-only-fonts.md) and [ADR 0060](./adr/0060-font-reload-uses-normal-bounded-resize.md).
 - **Failure qualification:** A failed compensating native PTY resize permits an explicitly reported recovery-failed outcome, with old accepted settings retained, all readers resumed, geometry reconciliation attempted, and unrecovered sessions identified. Ordinary failures do not permit partial acceptance. See [ADR 0061](./adr/0061-manual-reload-compensation-failure.md).
 - **Relationships:**
   - belongs to Application Business Host
-  - references TOML User Settings
   - references Application Command Dispatcher
-  - references Terminal Font Policy
   - references OSC Default Color Policy
   - references OSC Indexed Palette Policy
 
 ### Watched Configuration Reload
-- **Definition:** The approved, not-yet-implemented default-on file-triggered extension of Manual Configuration Reload. Debounced saves and editor file replacement use the same strict acceptance boundary; invalid edits retain the last accepted configuration, repeated identical errors avoid notification flooding, and watcher faults remain visible. See [ADR 0062](./adr/0062-watched-reload-and-new-session-launch-settings.md).
+- **Definition:** Default-on, debounced file-save/replacement trigger for the same strict Manual Configuration Reload transaction. Invalid edits retain accepted state, identical failures avoid flooding, watcher faults stay visible and manual reload remains available. See [ADR 0062](./adr/0062-watched-reload-and-new-session-launch-settings.md).
 - **Relationships:**
-  - extends Manual Configuration Reload
   - belongs to Application Business Host
 
 ### New-Session Launch Settings
-- **Definition:** The approved child-launch configuration for shell program, arguments, environment overrides and initial working directory. Reload updates future sessions only, without mutating existing children or Harbor's global environment/directory. Environment values are literal overlays with protected TERM; relative directories resolve against the configuration file, and an unavailable configured directory fails rather than silently falling back. See [ADR 0062](./adr/0062-watched-reload-and-new-session-launch-settings.md) for validation, inheritance and confidentiality rules. Environment/directory configuration is not yet implemented.
+- **Definition:** Shell program/arguments, environment overlays and initial directory for future children only; reload changes neither running children nor Harbor's global environment/directory. Values are literal, TERM is protected, relative paths resolve against the configuration file, and unavailable configured directories fail rather than fall back. Validation, inheritance and confidentiality: [ADR 0062](./adr/0062-watched-reload-and-new-session-launch-settings.md).
 - **Relationships:**
   - references TOML User Settings
   - references Manual Configuration Reload
 
 ### TOML User Settings
-- **Definition:** User preferences (loaded with startup recovery and re-read through the separately strict Manual Configuration Reload transaction) loaded from `~/.harbor/config.toml`; at startup, missing files use defaults, invalid scalar settings fall back independently, and an invalid color value resets the complete palette to defaults.
-- **Relationships:**
-  - configures Terminal
-  - configures System Default Font Selection
-  - configures Window Backdrop Tint
-  - configures Application Keybindings
+- **Definition:** User preferences from `~/.harbor/config.toml`, except Portable Distribution Mode. Startup uses defaults for missing files, independent scalar fallback, and whole-palette fallback for invalid colors; live reload instead uses strict complete-candidate acceptance.
 
+### Portable Distribution Mode
+- **Definition:** Windows ZIP mode selected by `harbor.portable` beside `harbor.exe`: uses adjacent `config.toml`, never reads/writes home configuration or creates/overwrites settings. Installed builds retain the home path. See [ADR 0057](./adr/0057-windows-installation-and-portable-isolation.md).
+- **Synonyms:** full portable mode, portable ZIP
+- **Relationships:**
+  - references TOML User Settings
 
 ### Widget Store
-- **Definition:** A reusable `harbor-widget` boundary that combines a UI-thread `Signal<S>` for Host-published declarative state with a private FIFO inbox for one-shot widget actions. It owns neither reducers nor side effects and does not automatically wake a Runtime.
+- **Definition:** UI-thread Signal state plus private FIFO action inbox. Host publishes state and owns reducers/effects; Store does neither reduction nor automatic Runtime wakeup.
 - **Relationships:**
-  - contains Signal
-  - produces Dispatcher
   - communicates with Runtime Host
   - implements Event-Turn Action Transport
 
 ### Dispatcher
-- **Definition:** A cloneable, write-only capability obtained from a Widget Store; `dispatch(A)` enqueues typed user intent in FIFO order without reading state, reducing actions, executing effects, or waking the Runtime.
-- **Relationships:**
-  - produced by Widget Store
-  - submits actions through Event-Turn Action Transport
-  - consumed by Runtime Host
+- **Definition:** Cloneable write-only Widget Store capability enqueueing typed intent FIFO; cannot read state, reduce, execute effects or wake Runtime.
 
 ### Event-Turn Action Transport
-- **Definition:** The application-owned sequencing rule in which widgets dispatch one-shot actions during event routing, then the Application Business Host drains and reduces the FIFO batch after widget effects are applied while retaining ownership of application models and platform effects.
-- **Relationships:**
-  - implemented by Widget Store
-  - consumed by Application Business Host
-  - preserves RuntimeEffects ordering
-  - keeps reducers and effects outside Harbor Widget Runtime
+- **Definition:** Widgets enqueue one-shot FIFO intent during routing; after widget effects, Application Business Host drains/reduces it and owns models/platform effects.
 
 ### Application Command
-- **Definition:** A user-invokable Harbor application operation exposed through a stable string ID at configuration and UI-discovery boundaries and represented by a typed command internally. PTY output, redraw, window lifecycle, and other internal notifications are not application commands.
+- **Definition:** User-invokable operation with stable external string ID and typed internal form, unlike PTY output, redraw and window lifecycle notifications.
 - **Relationships:**
-  - dispatched by Application Command Dispatcher
-  - registered in Application Command Registry
   - belongs to Application Business Host
 
 ### Application Command Registry
-- **Definition:** The application-owned catalog of implemented commands, their stable IDs, display metadata, default keybindings, and current availability, shared by shortcut resolution and future command-palette presentation.
+- **Definition:** Application catalog of implemented command IDs, display metadata, default bindings and availability, shared by shortcuts and future palette.
 - **Relationships:**
-  - contains Application Command
-  - configures Application Keybindings
   - belongs to Application Business Host
 
 ### Application Command Dispatcher
-- **Definition:** The single application-owned command submission path used by shortcuts, buttons, menus, and the future command palette. Shortcut handlers synchronously return a Command Outcome and enqueue only consumed commands into scoped FIFO Event-Turn Action Transport; the Application Business Host later executes them and owns side effects. It is not a generic publish/subscribe bus.
-- **Relationships:**
-  - dispatches Application Command
-  - implements Event-Turn Action Transport
-  - communicates with Application Business Host
+- **Definition:** Single command path for shortcuts/buttons/menus/future palette. Shortcuts synchronously return Command Outcome; only consumed commands enter scoped FIFO for later Host-owned execution. Not a pub/sub bus.
 
 ### Application Keybindings
-- **Definition:** Startup TOML command tables such as `[keybindings.app.new-tab]`, each containing a `bindings` array of self-contained `{ modifiers = [...], key = "..." }` records. Modifiers are explicit rather than encoded into chord strings. Omitted commands retain registry defaults, an empty `bindings` array unbinds defaults, and a matched available command receives first refusal before terminal input. The superseded command-to-string-array format is not accepted; like any invalid binding shape, it rejects the complete override set in favor of defaults without discarding valid non-keybinding settings.
+- **Definition:** Structured TOML command tables with `bindings` records carrying explicit modifiers and key. Omission retains defaults; an empty array unbinds. Matched available commands get first refusal before terminal input. Invalid overrides, including the superseded string-array format, reject the entire override set without discarding other valid startup settings. See [ADR 0041](./adr/0041-structured-keybinding-configuration.md).
 - **Relationships:**
-  - configured by TOML User Settings
-  - references Application Command Registry
   - communicates with Terminal Input Semantics
 
 ### Command Outcome
-- **Definition:** The synchronous result of attempting an application shortcut action: `Consumed` enqueues the command and prevents the triggering input from reaching the terminal, while `PassThrough` enqueues nothing and continues the same input to terminal handling. `terminal.copy-or-interrupt` passes through without a selection; `terminal.copy` always consumes and preserves empty-copy behavior.
+- **Definition:** Consumed enqueues a command and blocks terminal delivery; PassThrough queues nothing and forwards the same event. Copy-or-interrupt passes through without selection; copy always consumes, including empty copy.
 - **Relationships:**
-  - produced by Application Command Dispatcher
-  - controls Application Keybindings
   - communicates with Terminal Selection Copy Policy
 
 ### Terminal Tab
 - **Definition:** An application-owned terminal session identified by a stable TabId, retaining its Terminal and PTY resources independently of whether its side-rail item is active.
 - **Relationships:**
-  - contains Terminal
-  - referenced by Terminal Tab Manager
   - communicates with Terminal Widget Bridge
 
-
 ### Terminal Title Policy
-- **Definition:** Each terminal tab falls back to its effective shell executable name. A valid OSC 0/1/2 title replaces that fallback without requiring a user setting; an empty title or terminal reset restores the fallback. OSC title payloads are accepted only as valid UTF-8 without control characters and at no more than 256 Unicode characters; invalid payloads leave the current title unchanged. Every tab updates its own visible tab title, while only the active tab drives the native window title in the form `<title> — Harbor`. Working-directory metadata is tracked separately through OSC 7 rather than inferred from the title or at startup.
+- **Definition:** Per-tab shell-executable fallback, replaced by valid OSC 0/1/2 UTF-8 titles (no controls, at most 256 Unicode characters); empty/reset restores fallback and invalid input preserves the title. All tab labels update independently; only the active tab sets `<title> — Harbor`. OSC 7 directory metadata is separate, never inferred from titles/startup.
 - **Relationships:**
   - belongs to Terminal Tab
   - communicates with Application Business Host
   - references TOML User Settings
+
 ### Terminal Tab Manager
 - **Definition:** The Application Business Host model that owns ordered Terminal Tabs, selects one active tab for input and presentation, and routes tab-qualified background output events.
 - **Relationships:**
-  - contains Terminal Tab
-  - belongs to Application Business Host
   - communicates with Harbor Widget Runtime
 
 ### Widget View Macro
-- **Definition:** An internal experimental Rust-style `view! { cx; root }` procedural macro that uses semicolon-terminated ordinary Rust expressions for child values, `expression => { children }` for child-bearing components, and bare `for`/`if`/`match` only to organize child lists. It expands into the existing Component/View build model without adding runtime semantics; roots are Components, while child values convert through `IntoChildView`.
+- **Definition:** Experimental `view! { cx; root }` Rust-expression syntax: semicolon child values, `expression => { children }` components and child-list `for`/`if`/`match`. Expands into Component/View without new runtime semantics; Component roots and IntoChildView children. See [ADR 0032](./adr/0032-view-macro-rust-expression-grammar.md).
 - **Synonyms:** view! DSL
 - **Relationships:**
-  - produces View
   - references BuildCx
   - belongs to Harbor Widget Runtime
+
 ### Hex Color Setting
 - **Definition:** A TOML color string in `#RRGGBB` or `#RRGGBBAA` form, where omitted alpha means opaque and eight-digit colors preserve alpha for terminal backgrounds.
 - **Relationships:**
   - belongs to TOML User Settings
-  - configures Default Background Cell
 
 ### Terminal Theme
-- **Definition:** A terminal-only color scheme, distinct from the application's day/night appearance mode. Selecting a terminal theme must not recolor application chrome such as the tab rail or buttons. This approved boundary is recorded in [ADR 0058](./adr/0058-terminal-themes-separate-from-application-appearance.md); it does not imply a theme-selection UI is implemented.
+- **Definition:** Terminal-only color scheme, not application chrome or its day/night mode; theme selection must not recolor rail/buttons. This boundary does not establish a theme UI; see [ADR 0058](./adr/0058-terminal-themes-separate-from-application-appearance.md).
 - **Synonyms:** Terminal color scheme
-- **Relationships:**
-  - belongs to Terminal
-  - references Application Appearance Mode
 
 ### Application Appearance Mode
-- **Definition:** The application's day/night (light/dark) appearance policy, separate from named terminal themes. The approved policy permits only these two overall modes; defaults, system-mode following, switching controls, and persistence remain unspecified, and implementation is not established by this definition. See [ADR 0058](./adr/0058-terminal-themes-separate-from-application-appearance.md).
+- **Definition:** Application day/night (light/dark) policy, independent of Terminal Theme and compositor tint. Only two overall modes are approved; defaults, system following, controls and persistence remain unspecified. See [ADR 0058](./adr/0058-terminal-themes-separate-from-application-appearance.md).
 - **Synonyms:** Day mode, Night mode, Light mode, Dark mode
 - **Relationships:**
   - belongs to Application Business Host

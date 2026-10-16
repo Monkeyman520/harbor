@@ -8,21 +8,9 @@
 
 RIS and PTY/session close reliably release synchronized-output suppression, and the protocol checklist records evidence for the completed `?2026` behavior.
 
-## Layers
+## Execution
 
-- [ ] **VT Parser / Screen State:** Clear synchronized-output state on RIS while preserving it on DECSTR, with protocol-query behavior verified after each reset path.
-- [ ] **Terminal Session / FrameDemand:** Clear state when Terminal I/O observes PTY reader/session shutdown so a surviving terminal view returns to ordinary presentation eligibility.
-- [ ] **Terminal Widget Bridge / External Schedule:** Propagate released eligibility and remove any sync-driven scheduling demand for the bridge's matched terminal.
-- [ ] **Runtime Scheduler / Winit Presentation:** Cancel pending recovery work and permit the normal post-cleanup redraw/present path without violating drawable-surface behavior.
-- [ ] **Conformance Evidence:** Add end-to-end reset and closure coverage, record the evidence, and check only the verified `?2026` entries in `docs/protocol/checklist.md`.
-
-## Approach
-
-1. Connect RIS hard-reset handling to the Terminal/session synchronized-output state, while explicitly leaving DECSTR unchanged.
-2. Define the Terminal I/O close/EOF path that clears the same state exactly once and makes a remaining view eligible for ordinary redraw.
-3. Ensure bridge and Runtime demand collection observe the cleared state, cancel stale recovery deadlines, and do not retain suppression after cleanup.
-4. Exercise RIS and close paths from PTY output through the visible Runtime/presenter contract, including a prior forced-recovery state.
-5. Update the protocol checklist only after automated evidence establishes the spec's batch, nesting, recovery, and lifecycle criteria.
+Clear RIS and PTY EOF/session-close state exactly once, preserving DECSTR and query status. The matched bridge must propagate released eligibility; Runtime must cancel stale recovery demand and permit ordinary presentation without violating drawable-surface policy. Test cleanup end-to-end after a prior forced recovery. Check protocol entries only after automated batch, nesting, recovery and lifecycle evidence exists.
 
 ## Blocked by
 

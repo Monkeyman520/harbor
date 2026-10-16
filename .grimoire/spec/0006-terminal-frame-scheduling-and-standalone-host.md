@@ -28,53 +28,37 @@ For direct rendering, provide a public feature-gated standalone winit/wgpu host 
 
 ### E2E: Idle cursor blinks inside a widget frame
 
-- **Given:** A drawable widget-hosted terminal with a visible blinking cursor and no pending PTY output or user input.
-- **When:** The event loop reaches successive blink deadlines.
-- **Then:** The Runtime requests one frame at each phase edge, the cursor alternates visible and hidden, and the event loop waits between deadlines rather than polling.
+A drawable, visible blinking widget-hosted cursor with no PTY/input activity alternates at successive deadlines: Runtime requests one frame per phase edge and waits between deadlines, without polling.
 
 ### E2E: Terminal input resets widget-hosted blinking
 
-- **Given:** A widget-hosted cursor is in its hidden blink phase.
-- **When:** Routed keyboard input or a cursor-position-changing terminal update occurs.
-- **Then:** The next frame renders the cursor visible immediately and the next deadline starts a fresh blink cycle.
+Keyboard input or cursor-position-changing output during a hidden widget-hosted blink phase makes the next frame visible immediately and starts a fresh cycle.
 
 ### E2E: Idle cursor blinks in the standalone host
 
-- **Given:** The public standalone winit/wgpu terminal host is running with a drawable surface and an otherwise idle blinking cursor.
-- **When:** The blink deadline expires.
-- **Then:** The host requests and presents a frame through its own winit/wgpu path, producing the same visibility transition as widget hosting.
+Historically, a drawable idle standalone winit/wgpu host presents the same blink visibility transition through its own path when the deadline expires; see the partial-supersession note.
 
 ### E2E: Non-drawable surface suspends and recovers scheduling
 
-- **Given:** Either host has a blinking terminal and its surface becomes zero-sized, minimized, or otherwise non-drawable.
-- **When:** Blink deadlines pass and the surface later becomes drawable again.
-- **Then:** No timer-driven frames are requested while non-drawable; restoration requests one frame and resumes deadline scheduling from the current terminal state.
+In either host, zero-size, minimized or otherwise non-drawable surfaces suppress timer-driven frames; restoration requests one recovery frame and resumes deadlines from current terminal state.
 
 ## Decisions
 
 ### Use one host-neutral frame-demand contract
 
-- **Choice:** Terminal reports immediate invalidation and the next blink deadline; it does not schedule a window or present a surface itself.
-- **Reason:** A shared contract fixes idle blinking once and keeps widget and direct hosts behaviorally equivalent while preserving Terminal's injected-resource boundary.
-- **ADR reference:** [0020-host-neutral-terminal-frame-scheduling](../adr/0020-host-neutral-terminal-frame-scheduling.md); [0011-terminal-custompaint-gpu-injection](../adr/0011-terminal-custompaint-gpu-injection.md)
+See [ADR 0020](../adr/0020-host-neutral-terminal-frame-scheduling.md), [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md).
 
 ### Make Runtime the widget-hosted scheduling authority
 
-- **Choice:** Registered external draws contribute scheduling through Runtime-managed callbacks, and Runtime effects remain the only widget-hosted redraw and wait-policy output.
-- **Reason:** Passing deadlines through `src/` would reintroduce App orchestration that ADR 0015 moved into the feature-gated widget integration.
-- **ADR reference:** [0021-external-draw-scheduling-and-standalone-terminal-host](../adr/0021-external-draw-scheduling-and-standalone-terminal-host.md); [0015-runtime-owned-frame-presentation](../adr/0015-runtime-owned-frame-presentation.md)
+See [ADR 0021](../adr/0021-external-draw-scheduling-and-standalone-terminal-host.md), [ADR 0015](../adr/0015-runtime-owned-frame-presentation.md).
 
 ### Keep direct winit support outside the Terminal core
 
-- **Choice:** The direct-mode API is a feature-gated companion host adapter, not a `winit` dependency of the core `harbor-terminal` engine.
-- **Reason:** ADR 0021 requires direct winit/wgpu support, while ADR 0012 explicitly keeps window management and `winit` out of `harbor-terminal`; an adapter boundary satisfies both decisions.
-- **ADR reference:** [0021-external-draw-scheduling-and-standalone-terminal-host](../adr/0021-external-draw-scheduling-and-standalone-terminal-host.md); [0012-consolidate-render-ui-into-terminal](../adr/0012-consolidate-render-ui-into-terminal.md)
+Historical direct-mode contract: a feature-gated companion host satisfies ADR 0021 without adding winit to the core. The partial-supersession note above remains unresolved. See [ADR 0021](../adr/0021-external-draw-scheduling-and-standalone-terminal-host.md), [ADR 0012](../adr/0012-consolidate-render-ui-into-terminal.md).
 
 ### Suspend timer wakes for non-drawable surfaces
 
-- **Choice:** Hosts suppress blink-triggered redraws while their surface cannot draw and request one recovery frame when it can.
-- **Reason:** This preserves the surface suspension and recovery policy already assigned to the winit integration while preventing background timer work.
-- **ADR reference:** [0021-external-draw-scheduling-and-standalone-terminal-host](../adr/0021-external-draw-scheduling-and-standalone-terminal-host.md); [0015-runtime-owned-frame-presentation](../adr/0015-runtime-owned-frame-presentation.md)
+See [ADR 0021](../adr/0021-external-draw-scheduling-and-standalone-terminal-host.md), [ADR 0015](../adr/0015-runtime-owned-frame-presentation.md).
 
 ## Test Plan
 

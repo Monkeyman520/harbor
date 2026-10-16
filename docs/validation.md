@@ -19,8 +19,8 @@ Run at phase boundaries and before merging behavior changes:
 
 ```bash
 cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --workspace
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --workspace
 python scripts/check_docs.py
 python scripts/checklist_summary.py
 ```
@@ -43,6 +43,7 @@ Record environment limitations as **not run** or **blocked**, not as passing. Pr
 | Tabs/panes/session routing  | Identity, independent geometry, focus/capture/IME, late output events, hidden-session progress and shutdown            |
 | Renderer/text               | CPU geometry/model tests, practical GPU encode coverage, visual/runtime evidence and fallback checks                   |
 | Performance change          | Before/after captures under the same scenario while correctness gates remain green                                     |
+| Windows release packages | Static-CRT payload and version rejection tests; real MSI/ZIP construction, payload inspection, installer lifecycle and downloaded-asset smoke as detailed below |
 | Documentation               | Language/local links, changed fragments, source-backed claims, and plan/status consistency                             |
 
 ## Parser Safety
@@ -114,7 +115,7 @@ Acrylic smoke includes Windows 10 client behavior and documented caption degrada
 
 ### Startup Settings and Keybindings
 
-Copy `config.example.toml` to `~/.harbor/config.toml` and check:
+For installed or unmarked builds, copy `config.example.toml` to `~/.harbor/config.toml`; for portable builds, use `config.toml` beside the marked executable. Check:
 
 - configured family/size and `pwsh.exe -NoLogo`;
 - default/ANSI colors, cursor, selection and translucent background on the first frame;
@@ -125,6 +126,35 @@ Copy `config.example.toml` to `~/.harbor/config.toml` and check:
 - one invalid scalar, one invalid color, invalid TOML and a missing/unreadable file.
 
 Expected startup policy: keybinding failure restores the complete default binding table without discarding valid unrelated settings; scalar fallback is local; color failure restores the whole palette; document failure uses complete defaults. Repeat without Acrylic and confirm terminal background configuration does not change compositor tint.
+
+### Windows Release Packages
+
+Follow the [README prerequisites and packaging options](../README.md#windows-release-packages).
+From the repository root on Windows, construct both formats and run package checks:
+
+```powershell
+./scripts/package_windows.ps1
+$release = './target/x86_64-pc-windows-msvc/release'
+$version = (Get-Item "$release/harbor.exe").VersionInfo.ProductVersion
+./scripts/tests/test_package_windows.ps1 -ReleaseDirectory $release -MsiPath "./target/dist/harbor-$version-windows-x64.msi"
+```
+
+The package tests cover version rejection, archive paths, common payload,
+embedded MSI payload and headless scope/costing checks. Run them in PowerShell 7
+and Windows PowerShell 5.1 when changing script compatibility. They do not execute
+the GUI installer or establish actual UI-to-elevated-process behavior. The PR
+quality workflow runs package construction/tests; the release workflow reuses it
+before publication. Local workflow lint does not establish a successful remote run.
+
+Record these additional acceptance checks separately:
+
+- **MSI lifecycle:** ordinary-user per-user installation and explicitly authorized UAC per-machine installation, including a custom directory, correctly scoped shortcuts, same-scope upgrade, configuration-preserving uninstall and cross-scope blocking. Inspect the resulting payload and launch it; metadata/costing checks alone do not prove installation scope or elevation behavior.
+- **Portable configuration:** distinct home/executable settings and an unrelated launch directory; startup, watched and manual reload all use the executable-adjacent file without changing home settings. Check missing, malformed and unreadable files, last-valid-state retention on reload, read-only and moved directories, and marker changes taking effect only after restart.
+- **Live release/download:** with authorization, trigger a matching stable tag, verify that failed gates cannot publish and that a published Release is not replaced, download both published assets and smoke-test the downloaded installer/portable payloads. Record the tag, workflow run and asset identities; locally built packages are not downloaded-release evidence.
+
+See [Current Status](current-status.md#windows-distribution) for the locally
+executed scope and explicit NOT RUN boundaries. Do not promote historical
+installer or publication evidence to acceptance of a newer revision.
 
 ### Next-Stage Acceptance Additions
 

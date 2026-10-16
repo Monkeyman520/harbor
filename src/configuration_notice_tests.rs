@@ -283,3 +283,101 @@ fn actual_watcher_reload_handles_missing_invalid_recovery_and_success_without_su
         "same failure after recovery is a new episode"
     );
 }
+
+#[test]
+fn application_configuration_consumers_do_not_reresolve_the_source() {
+    let source = include_str!("shell.rs");
+    assert!(!source.contains("harbor_config::default_config_path("));
+    assert!(!source.contains("harbor_config::load()"));
+    assert_eq!(source.matches("harbor_config::load_with_path()").count(), 1);
+}
+
+#[test]
+fn portable_startup_manual_and_watched_reload_keep_one_source() {
+    use crate::configuration_watch::{ConfigurationWatch, WatchEvent};
+    const CHILD: &str = "HARBOR_PORTABLE_CONFIGURATION_PROBE";
+    if std::env::var_os(CHILD).is_none() {
+        let file = ConfigFile::new();
+        file.write("[font]\nsize = 19\n");
+        let directory = file.path().parent().unwrap();
+        let executable = directory.join(format!(
+            "harbor portable 配置{}",
+            std::env::consts::EXE_SUFFIX
+        ));
+        let marker = directory.join("harbor.portable");
+        std::fs::write(&marker, "").unwrap();
+        let current_exe = std::env::current_exe().unwrap();
+        std::fs::hard_link(&current_exe, &executable)
+            .or_else(|_| std::fs::copy(&current_exe, &executable).map(|_| ()))
+            .unwrap();
+        // A child has its own executable location without touching the real home
+        // configuration or putting a marker beside other concurrently running tests.
+        let output = std::process::Command::new(&executable)
+            .args([
+                "--exact",
+                "shell::configuration_notice_tests::portable_startup_manual_and_watched_reload_keep_one_source",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .current_dir(std::env::temp_dir())
+            .output();
+        std::fs::remove_file(&executable).unwrap();
+        let _ = std::fs::remove_file(&marker);
+        let output = output.unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "stdout: {stdout}\nstderr: {stderr}"
+        );
+        assert!(
+            stdout.contains("1 passed; 0 failed"),
+            "probe did not run: {stdout}"
+        );
+        return;
+    }
+
+    let (path, loaded) = harbor_config::load_with_path();
+    let expected = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("config.toml");
+    assert_eq!(path.as_deref(), Some(expected.as_path()));
+    assert_eq!(loaded.settings.font.size, 19.0);
+    assert_eq!(harbor_config::load().settings, loaded.settings);
+    let mut accepted = loaded.settings;
+    let clipboard = accepted.clipboard.clone();
+    let (sender, wakes) = mpsc::channel();
+    let watch = ConfigurationWatch::start(path.clone(), move || sender.send(()).is_ok()).unwrap();
+    let next = || {
+        wakes.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(matches!(watch.take_pending(), Some(WatchEvent::Reload)));
+    };
+    let reload = |accepted: &mut harbor_config::Settings| {
+        reload_configuration_from_path(path.as_deref(), accepted, &clipboard, |_, _, _| Ok(vec![]))
+    };
+    next(); // The initial observation must not substitute another source.
+    reload(&mut accepted).unwrap();
+    assert_eq!(accepted.font.size, 19.0);
+
+    // Mode selection is fixed for this session, even if the marker is removed.
+    std::fs::remove_file(expected.with_file_name("harbor.portable")).unwrap();
+    std::fs::write(&expected, "[font]\nsize = 23\n").unwrap();
+    next();
+    reload(&mut accepted).unwrap();
+    assert_eq!(accepted.font.size, 23.0);
+    std::fs::write(&expected, "[font]\nsize = 25\n").unwrap();
+    reload(&mut accepted).unwrap(); // Manual reload uses that same saved path.
+    assert_eq!(accepted.font.size, 25.0);
+
+    std::fs::remove_file(&expected).unwrap();
+    next();
+    assert!(reload(&mut accepted).unwrap().is_none());
+    assert_eq!(accepted.font.size, 25.0);
+    std::fs::write(&expected, "[font\nsize = 42\n").unwrap();
+    next();
+    let error = reload(&mut accepted).err().unwrap();
+    assert!(error.to_string().contains(expected.to_str().unwrap()));
+    assert_eq!(accepted.font.size, 25.0);
+}

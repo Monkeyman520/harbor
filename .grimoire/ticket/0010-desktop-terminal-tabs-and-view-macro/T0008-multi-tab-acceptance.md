@@ -8,21 +8,9 @@
 
 The complete multi-tab slice has executable evidence for all-session resize, active-only input/render scheduling, deterministic cleanup, macro equivalence, Windows desktop behavior, and standard quality gates.
 
-## Layers
+## Execution
 
-- [ ] **Widget/Runtime:** Verify integrated layout, keying, interaction, scroll, focus, theme, macro, and post-layout effect contracts.
-- [ ] **Terminal/PTY:** Broadcast changed active content TerminalSize to every tab and prove inactive/closed session behavior.
-- [ ] **Runtime Host:** Complete event arbitration, final-tab window exit, paste modal gate, surface lifecycle, and failure handling.
-- [ ] **Renderer/Scheduler:** Prove hidden tabs do not draw or keep Poll active and active external registrations change cleanly.
-- [ ] **Verification:** Run focused suites, workspace gates, Windows smoke matrix, and performance/resource evidence.
-
-## Approach
-
-1. Convert each distinct valid terminal content allocation to a clamped TerminalSize and broadcast it once to all live tabs after layout.
-2. Exercise active/inactive output, cursor blink, synchronized output, activation, close, surface recovery, minimize/restore, and DPI movement.
-3. Add deterministic shutdown/leak tests for reader, PTY control, bridge callback, and external schedule cleanup.
-4. Validate macro-authored UI behavior against handwritten fixtures and compile-fail diagnostics.
-5. Run the repository validation policy and record Windows runtime evidence for input, window, and rendering behavior.
+Verify the integrated widget layout/keying, interaction, scrolling, focus, theme, macro and post-layout contracts. Broadcast each distinct valid clamped TerminalSize once after layout; test active/inactive output, blink, synchronized output, activation, close, failure handling and surface recovery. Prove reader/PTY/bridge/schedule cleanup, macro/handwritten equivalence and compile-fail diagnostics; run workspace, Windows and performance/resource gates below.
 
 ## Blocked by
 

@@ -3,20 +3,15 @@
 **Spec ID:** 0024
 **Status:** Draft
 **Date:** 2026-10-15
-**Sources:** [Issue #155](https://github.com/wangjq4214/harbor/issues/155), [manual slice #172](https://github.com/wangjq4214/harbor/issues/172), [spec 0023](./0023-atomic-manual-configuration-reload.md), [ADR 0062](../adr/0062-watched-reload-and-new-session-launch-settings.md), and the conversation contract below.
+**Sources:** [Issue #155](https://github.com/wangjq4214/harbor/issues/155), [manual slice #172](https://github.com/wangjq4214/harbor/issues/172), [spec 0023](./0023-atomic-manual-configuration-reload.md), [ADR 0062](../adr/0062-watched-reload-and-new-session-launch-settings.md).
 
-## Authority and Scope
+## Scope
 
-- **C1:** The user explicitly included both environment variables and launch directory in the current #155 package; neither is deferred.
-- **C2:** The user approved inherited-environment overlays, Windows case-insensitive name conflicts, empty-string values, removal restoring inheritance, literal values, protected `TERM`, configuration-relative directories, complete rejection of invalid reload candidates, honest later spawn failure, and variable-value confidentiality.
-- **C3:** The user approved automatic watching enabled by default, stable-error feedback without repeated identical notification flooding, and the spec-to-ticket endpoint.
-- **C4:** This work organizes the remaining delivery and existing manual-reload acceptance. It does not authorize implementation, test execution of the product, staging/committing, or remote issue changes during refinement.
+Extends [spec 0023](./0023-atomic-manual-configuration-reload.md), retaining its manual/font/OSC/input/startup and atomic-failure contracts and ADR 0059–0061 qualifications. Environment and launch directory are included in #155, not deferred; watching is default-on. Shell launch changes affect new sessions only; clipboard policy remains restart-required. [Spec 0025](./0025-portal-and-configuration-notifications.md) qualifies notification eligibility, not acceptance.
 
-This spec extends spec 0023 rather than replacing its manual command, font, OSC, input, startup compatibility, and failure contracts. Its environment/directory and watcher exclusions remain true for that initial slice but not for this extension. Shell program/arguments remain new-session-only; clipboard policy remains restart-required. Existing ADR 0059/0060/0061 qualifications continue to apply.
+At refinement, manual/font code was observed in open [PR #201](https://github.com/wangjq4214/harbor/pull/201), branch `feat/config-reload` at `bdb37993e0cfa95fa4708596ebacf8d2dee01e4c`, while #172 still excluded fonts. That observation is not acceptance. Historical slice results and active package work live in the [delivery record](../ticket/0017-configuration-hot-reload/README.md).
 
-### Observed Baseline, Not Acceptance
-
-At inspection, branch `feat/config-reload` at `bdb37993e0cfa95fa4708596ebacf8d2dee01e4c` contains manual reload and terminal font transitions in [PR #201](https://github.com/wangjq4214/harbor/pull/201). The PR is open; #172 still excludes fonts in its published wording. The local status page says interactive Windows reload acceptance is NOT RUN; no corresponding reload evidence record was available in this checkout at inspection. `/docs/verification/*` is ignored. These observations are not proof that checks failed or that evidence cannot exist elsewhere; delivery must locate retrievable evidence or produce it.
+**Stable execution aliases — 0017-configuration-hot-reload:** T0001 = manual/font acceptance (0023 R1–R8/E1–E11; this R1/R6); T0002 = session environment/directory (R2–R4/E1–E7/E12); T0003 = watched reload (R4/R5/E8/E9/E11); T0004 = combined E10/R6 and remaining package evidence. These aliases also identify native-test markers; a slice pass is not full #155 acceptance.
 
 ## Requirements
 
@@ -76,20 +71,6 @@ Close #155 only after R1–R5 are evidenced, or through a subsequent explicit sc
 
 Apply [validation policy](../../docs/validation.md) and the quality gates from #155. Record revision, dirty scope, OS/ConPTY/application versions, steps, expected/observed outcomes, artifacts and exclusions with PASS / FAIL / NOT RUN / BLOCKED. Provide retrievable evidence rather than a local-only missing/ignored Markdown link. If ignore policy prevents committing an intended evidence file, use allowed retrievable artifacts or obtain separate authorization; do not silently edit Git policy.
 
-## Solution and Seams
-
-Extend the existing application-owned configuration transaction and child-launch boundary. File observation supplies reload requests; it is not a second configuration state owner. The existing manual acceptance contract remains authoritative for resource preparation and publication.
-
-| Seam | Connects | Expects | Provides |
-| --- | --- | --- | --- |
-| Candidate parsing | Config file / `harbor-config` → application | Complete typed launch fields and diagnostics, plus config-file location | Strict validation inputs and stable relative-directory meaning without exposing variable values |
-| Reload triggers | Manual dispatcher and watcher → application coordinator | Current-file reload requests, save coalescing and failure notification | One ordered acceptance path, not independent state writers |
-| Accepted launch policy | Application coordinator → tab factory | Fully validated candidate and successful existing resource transaction | Future launches consistent with accepted live settings; no publication on failure |
-| Child creation | Factory / `ShellCommand` → Windows PTY backend | Literal environment overlays and accepted initial directory | Valid per-child environment/directory, existing process lifecycle, explicit spawn errors |
-| Feedback | Reload/watch/spawn outcomes → UI and logs | Actual result and application policy | Non-modal actionable diagnostics, no environment values, no PTY injection |
-
-Current integration surfaces: [config](../../crates/harbor-config/src/lib.rs), [coordinator](../../src/shell.rs), [tab factory](../../src/tab_coordinator.rs), [PTY launch inputs](../../crates/harbor-pty/src/lib.rs), [Windows process creation](../../crates/harbor-pty/src/windows.rs), and [manual transaction tests](../../src/configuration_reload_tests.rs). These references identify responsibilities, not a mandated internal refactoring plan.
-
 ## End-to-End Acceptance
 
 | ID | Given / When | Required outcome |
@@ -115,10 +96,6 @@ Current integration surfaces: [config](../../crates/harbor-config/src/lib.rs), [
 - Run `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --workspace`, `python scripts/check_docs.py`, and `python scripts/checklist_summary.py` at delivery; report skipped/blocked gates honestly.
 - Reconcile README/config examples, current-status/roadmap descriptions, and #155/#172/PR scope based on evidenced behavior. Remote edits require execution authorization; this spec does not make them.
 
-## Decisions and Limits
+## Limits
 
-R2–R5 derive from C1–C3 and ADR 0062; R1 and atomicity qualifications derive from spec 0023 and ADR 0059–0061; R6 derives from issue #155 and validation policy. There are no additional confirmed product assumptions. Concrete field names, watcher backend and debounce timing remain implementation details, not new behavioral requirements.
-
-No existing-process restart or environment/directory mutation, shell-expression expansion, inherited-variable deletion syntax, widget HMR changes, palette UI, new profile system, live clipboard-policy changes, or changed OSC 7 side effects are introduced. This spec neither promises all historical content survives ordinary bounded font resize nor treats unavailable requested font family as necessarily fatal when the established usable-system-font fallback applies.
-
-This document is a contract, not proof of implementation, successful tests, issue closure or Windows acceptance.
+Field names, watcher backend and debounce timing are implementation details, not additional requirements. No existing-process restart or environment/directory mutation, shell-expression expansion, inherited-variable deletion syntax, widget HMR changes, palette UI, profile system, live clipboard-policy change or changed OSC 7 side effects. Spec 0023's bounded font retention and usable-system-font fallback remain applicable. This draft is not proof of implementation, tests, issue closure or runtime acceptance.

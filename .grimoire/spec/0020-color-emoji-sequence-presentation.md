@@ -83,15 +83,7 @@ Keep the existing per-scalar path for ordinary text and add a complete emoji-uni
 
 ### Inspected repository surfaces
 
-- `crates/harbor-terminal/src/model.rs`: `Cell` source/suffix, `grid_width()`, `TerminalSnapshot`, `DirtyRange` and `UpdateDamage`.
-- `crates/harbor-text/src/contracts.rs` and `font.rs`: existing face/glyph/size/style identities and the scalar `FontBook` API; the new sequence request must not pretend its identity is one scalar `GlyphKey`.
-- `crates/harbor-text/src/backend/dwrite.rs`: scalar resolver/fallback, session-local face registry and coverage rasterization.
-- `crates/harbor-text/src/atlas.rs`: coverage pixel store, packing, persistent resolution and eviction result.
-- `crates/harbor-terminal/src/render/text.rs`: `paint_chars`, fixed-cell vertices, R8 GPU uploads, projection dirtiness, combining/orphan overlays and preedit.
-- `crates/harbor-terminal/src/render/pipeline.rs` and `crates/harbor-app/src/terminal_view.rs`: concrete renderer preparation and viewport/scale integration; resource invalidation must follow the real host path.
-- `crates/harbor-widget/src/renderer/widget_text_atlas.rs`: existing consumer of shared `harbor-text` coverage contracts; preserve compatibility without expanding widget emoji scope.
-
-These are inspected integration points, not implementation or runtime acceptance claims.
+Integrate the existing retained `Cell`/snapshot/damage contract, `harbor-text` scalar/fallback/atlas interfaces and terminal renderer/host transitions. A sequence request must not masquerade as a scalar `GlyphKey`. Preserve shared widget coverage consumers without expanding widget emoji scope.
 
 ## End-to-End Tests
 
@@ -110,18 +102,9 @@ These are inspected integration points, not implementation or runtime acceptance
 
 ## Decisions and Traceability
 
-| Assertion / choice | Authority |
-| --- | --- |
-| Complete color/ZWJ outcome, unchanged text/width/copy/neighbors, bounded fallback and required gates | Issue #181 |
-| Retained-unit width and copy authority, presentation separated from preservation | ADR 0044; Spec 0015 |
-| DirectWrite + reused Direct2D offscreen rasterization, pixel transfer rather than shared-texture interoperation | User confirmation; ADR 0054 |
-| Ordinary R8 path and separate bounded lazy color atlas; bounded presentation caches | Confirmed recommendation; ADR 0054; issue #181's resource/performance obligations |
-| Uniform downscaling, positioning and final cell clipping | User confirmation; ADR 0054 |
-| Native resource ownership outside the model and coherent damage/hidden-draw behavior | ADR 0045; ADR 0054 |
-| Presentation classifications, fixed versus foreground-dependent colors, cache generation semantics | Confirmed recommendation; ADR 0054 |
-| Evidence scope, quality checks and truthful support claims | Issue #181; Validation Policy |
+[#181](https://github.com/wangjq4214/harbor/issues/181) supplies presentation/performance/evidence outcomes. [ADR 0044](../adr/0044-unicode-text-unit-and-presentation-width-policy.md) and [Spec 0015](0015-unicode-terminal-text-correctness.md) retain text/width/copy authority; [ADR 0045](../adr/0045-gpu-independent-terminal-core-boundary.md) retains resource ownership and coherent updates. User confirmation and [ADR 0054](../adr/0054-color-emoji-offscreen-presentation.md) settle DirectWrite/Direct2D pixel transfer, ordinary R8 plus lazy color atlas, bounded caches, classifications, color behavior and uniform fit/clip. Evidence follows [Validation](../../docs/validation.md).
 
-No additional product/architecture decision is pending. Exact supported native formats/API availability and known supporting fixtures are facts to establish during execution, not a guarantee that every platform can render every sequence. Private cache structures, numeric resource limits, exact native interface selection and pixel encoding are execution details constrained by the contracts above. A needed new semantic or architectural choice must return to refinement before this spec is changed.
+Known supporting fonts/native formats/API availability are execution facts to establish, not universal guarantees. Cache structures, numeric bounds, exact native interfaces and pixel encoding remain private details. New semantic or architectural choices require refinement.
 
 ## Limitations and Out of Scope
 

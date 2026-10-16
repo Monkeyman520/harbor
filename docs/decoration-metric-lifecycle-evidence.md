@@ -4,7 +4,7 @@
 
 - **Date:** 2026-10-11
 - **Base revision:** `f212a4723871bd09c3492853112b49b1c4ca042f`, with the uncommitted T0002 changes below. No staging, commit or issue edit was performed.
-- **Requirements:** [T0002](../.grimoire/ticket/0016-box-drawing-and-decoration-lifecycle/T0002-decoration-metric-lifecycle.md), [Spec 0022 R3 and decoration/transition-specific R4](../.grimoire/spec/0022-box-drawing-and-decoration-lifecycle.md), [Spec 0018](../.grimoire/spec/0018-modern-sgr-decorations.md), [ADR 0056](../.grimoire/adr/0056-terminal-owned-procedural-box-drawing.md), and [Validation Policy](validation.md).
+- **Requirements:** [Spec 0022 R3 and decoration/transition-specific R4](../.grimoire/spec/0022-box-drawing-and-decoration-lifecycle.md), [Spec 0018](../.grimoire/spec/0018-modern-sgr-decorations.md), [ADR 0056](../.grimoire/adr/0056-terminal-owned-procedural-box-drawing.md), and [Validation Policy](validation.md).
 - **Plan:** `.grimoire/plans/0026-decoration-metric-lifecycle.md` (local, ignored Grimoire planning context).
 - **Dirty production scope:** `crates/harbor-terminal/src/render/decoration.rs`, `layout.rs`, `pipeline.rs`, the shared viewport-validity/capacity seam in `box_drawing.rs`, optional renderer `pollster` dependency in `crates/harbor-terminal/Cargo.toml`, and rejected-preparation handling in `crates/harbor-app/src/terminal_view.rs`.
 - **Dirty test scope:** `render/decoration_tests.rs`, `render/text_tests.rs`, and the existing real-GPU application bridge regression in `terminal_view.rs`.

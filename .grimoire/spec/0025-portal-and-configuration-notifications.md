@@ -3,14 +3,9 @@
 **Spec ID:** 0025
 **Status:** Draft
 **Date:** 2026-10-15
-**Sources:** The conversation contract below; [ADR 0063](../adr/0063-root-composable-escape-and-quiet-configuration-notices.md); the existing configuration contracts in [spec 0023](./0023-atomic-manual-configuration-reload.md) and [spec 0024](./0024-watched-reload-and-launch-settings.md).
+**Sources:** [ADR 0063](../adr/0063-root-composable-escape-and-quiet-configuration-notices.md); the existing configuration contracts in [spec 0023](./0023-atomic-manual-configuration-reload.md) and [spec 0024](./0024-watched-reload-and-launch-settings.md).
 
-## Authority and Conversation Contract
-
-- **C1 — Original request:** Define a reusable escape component composable at the root; build a notification component using it; show necessary configuration notices as top-right floating UI; remove the bottom notice. An absent configuration file and silently resolvable conditions must not notify.
-- **C2 — Approved meaning:** The user accepted Portal semantics: content declared in the component tree is presented in a root-level overlay, outside the original parent's layout and clipping, without consuming terminal space.
-- **C3 — Approved classification and interaction:** The user accepted silent missing-file, successful/no-change reload and ordinary automatic recovery/system-fallback cases; actionable notification for unapplied configuration changes, restart requirements, unavailable observation and unrecovered failures; no repeated identical-message flooding. Notifications are manually dismissible, do not steal terminal focus, and errors requiring action do not automatically disappear.
-- **C4 — Selected endpoint:** The user accepted a single spec, without ticket decomposition or implementation in this refinement.
+## Scope
 
 This spec changes presentation and notification eligibility, not configuration acceptance. It takes precedence over spec 0023 R7/E1/E2 and spec 0024 R4/R5 only where they would require a routine success or absent-file user-facing notice. Missing live candidates still do not commit defaults. Preserve strict complete-candidate rejection, coherent publication, existing session identity, OSC policy, restart-required clipboard policy, confidentiality and explicit compensation-failure reporting. [ADR 0059](../adr/0059-atomic-manual-reload-and-terminal-only-fonts.md) links the limited notification-policy supersession in both directions; [ADR 0062](../adr/0062-watched-reload-and-new-session-launch-settings.md) still requires actionable watcher-failure feedback and duplicate suppression.
 
@@ -24,7 +19,7 @@ Content is declared at its component-tree location but displayed in a root-level
 
 Adding, updating or removing Portal content must not consume space in the normal layout. In particular, notification visibility must not shrink the terminal allocation, change its grid or trigger a PTY resize merely to make room for a notice. Removing content or its owner must remove the corresponding overlay rather than leave stale visible or interactive content.
 
-The capability must be reusable for arbitrary component content rather than only notification text. C2 defines the required escape behavior; it does not require compatibility with the complete React Portal API.
+The capability must be reusable for arbitrary component content rather than only notification text. The escape contract does not require compatibility with the complete React Portal API.
 
 ### R2 — Notification Component and Application Integration
 
@@ -71,20 +66,6 @@ Dismissal is presentation intent, not a configuration command or a stored false 
 
 Required notices must remain truthful and actionable: identify the relevant configuration path, parse location, setting or failed operation where available; state retained effective configuration on reload failure. Feedback remains application UI, never text injected into the PTY. Preserve spec 0024's prohibition on revealing environment-variable values in UI, logs or error chains. User-facing silence does not require discarding existing diagnostic logging.
 
-## Solution and Seams
-
-Compose a general root-level escape capability with a separate notification component. Route application-classified configuration outcomes to that component instead of the bottom terminal-panel label. This is the selected solution boundary, not an internal rendering or implementation plan.
-
-| Seam | Connects | Expects | Provides |
-| --- | --- | --- | --- |
-| Escape presentation | Declarative content/owner → widget root overlay | Arbitrary component content and its mounted lifetime | Root-level visual and hit-test placement outside original-parent layout/clipping, with no normal-layout reservation and no stale overlay after removal |
-| Notification presentation | Application presentation state → notification component → Portal | Eligible message, relevant outcome meaning and dismissal intent | Top-right non-modal notices with R3 interaction and lifetime rules |
-| Configuration classification | Startup/reload/watch outcomes → application UI state | Actual typed/error outcomes, accepted-state information, and the distinction between absent and otherwise unreadable files | R4 eligibility and truthful content; no routine-success notification feed |
-| Dismissal and publication | Notification controls / Host → declarative state and runtime | One-shot dismissal actions, published presentation state, existing invalidation/effect ordering | Dismissal without accepting settings or stealing terminal focus |
-| Terminal allocation | Main-window root / notification layer → terminal workspace | Unchanged ordinary workspace constraints when only visibility changes | Stable terminal allocation/grid, with no notice-induced PTY resize |
-
-Observed integration surfaces are [main-window root and bottom label](../../crates/harbor-app/src/workspace.rs), [Host-published UI state](../../crates/harbor-app/src/tab_view.rs), [startup/reload/watch reporting](../../src/shell.rs), [configuration I/O and candidate validation](../../crates/harbor-config/src/lib.rs), and the [widget component/runtime boundary](../../crates/harbor-widget/src/view.rs). These identify existing responsibilities, not mandated type or method names.
-
 ## End-to-End Acceptance
 
 | ID | Given / When | Required outcome |
@@ -103,12 +84,6 @@ Observed integration surfaces are [main-window root and bottom label](../../crat
 
 Portal-specific verification must include clipping escape, displayed-position hit testing, content removal and layout invariance; a configuration-message screenshot alone does not prove a general escape component. Application verification must exercise startup, manual and watched paths, not only a classifier unit test. Interactive appearance/focus evidence should distinguish executed checks from NOT RUN; this spec is not test execution evidence.
 
-## Decisions and Limits
+## Limits
 
-- **Portal rather than a configuration-only overlay workaround:** C1/C2 and ADR 0063. Component/API spelling and root-overlay implementation remain implementation details; only the defined behavior is required, not full React semantics.
-- **Separate presentation from eligibility:** C1/C3 and existing Host ownership in ADR 0029. No new command bus, watcher policy or acceptance owner is selected.
-- **Selective rather than universal reporting:** C3 qualifies the older always-visible reload-result contract, with the limited supersession described above. Strict acceptance, required actionable failures, ignored-setting feedback, restart semantics and redaction remain applicable.
-- **Manual dismissal, no focus theft, persistent actionable errors:** C3. No animation, numeric timeout, queue limit or visual theme has been assumed.
-- **Scope:** One spec for the connected escape/presentation/configuration outcome; no tickets, implementation, product QA or remote issue changes are authorized by this refinement. Existing paste/clipboard confirmation windows and modal security gates are not converted into notifications by this request.
-
-There are no additional product assumptions or unresolved blocking decisions. This draft defines delivery and acceptance, not proof that Portal or the notification component exists or has passed runtime validation.
+Component/API spelling, overlay implementation, inset, styling, animation, timeout and capacity are not prescribed. No new command bus, acceptance owner, watcher policy or state container. Existing paste/clipboard confirmation windows and modal security gates are not converted into notifications. This draft defines requirements, not implementation or runtime acceptance.

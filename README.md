@@ -11,7 +11,7 @@ The priority is a correct, stable daily-use Windows terminal. Native Unix PTY su
 - ⌨️ Traditional keyboard modes, bracketed paste/confirmation, SGR mouse reporting, focus reporting and IME commit/preedit integration.
 - 🔗 Terminal replies and capability queries; OSC titles, working-directory metadata, hyperlinks, default colors and shell markers.
 - 🎨 Damage-aware wgpu rendering, DirectWrite font fallback, synchronized-output scheduling and cursor/decorations.
-- ⚙️ Startup TOML settings and configurable application keybindings.
+- ⚙️ TOML settings with manual/default-on watched reload and configurable application keybindings.
 - ✨ Acrylic/backdrop fallback, rounded widget decorations and a retained desktop widget runtime.
 
 These are implemented scopes, **not a claim that every protocol or Windows release gate is complete**. See [Current Status](docs/current-status.md) for source links and limitations, and the [Protocol Checklist](docs/protocol/checklist.md) for exact coverage.
@@ -38,6 +38,73 @@ To regenerate the checked-in Windows App SDK bindings, restore the pinned build-
 [WASDK metadata](third_party/wasdk/README.md) with `./scripts/fetch_wasdk.ps1`.
 Normal builds do not require this download.
 
+### Windows Release Packages
+
+Build unsigned x64 MSI and portable ZIP packages from one release build:
+
+```powershell
+./scripts/package_windows.ps1
+```
+
+Prerequisites: Windows PowerShell 5.1 or newer, stable Rust with the
+`x86_64-pc-windows-msvc` target and Visual Studio C++ build tools, the **.NET 8+
+SDK** (a runtime alone is insufficient), and access to NuGet. The script restores
+the hash-checked ConPTY package, builds with `--locked --release` and static CRT
+linkage for the x64 target, restores pinned WiX/UI 5.0.2 tooling under `target/wix/`,
+and validates the complete common payload before returning outputs under `target/dist/`:
+
+- `harbor-<version>-windows-x64.msi`
+- `harbor-<version>-windows-x64-portable.zip`
+
+Use `-Format Zip` or `-Format Msi` for one format, and `-OutputDirectory <path>`
+to choose the output directory. ZIP-only packaging needs no .NET/WiX installation.
+Local packaging needs no GitHub credentials.
+`-SkipBuild -ReleaseDirectory <path>` reuses an explicit release directory only
+after checking its x64 binary ProductVersion, absence of direct external versioned
+VC runtime imports, and matching pinned ConPTY runtime. A normal dynamic-CRT build
+is rejected; rebuild through the packager rather than relabeling an old binary.
+Compiler rustflags are scoped to the packaging invocation and restored afterward;
+ordinary development builds keep their existing linkage.
+
+The first MSI page selects current-user or all-users installation and defaults
+to the current user. Current-user installation uses a user-owned directory;
+all-users installation uses native Program Files and requires administrator
+authorization. Both provide scoped Start Menu and uninstall entries. Upgrade in
+the same scope; uninstall before switching scopes. A visible opposite-scope
+installation is blocked, but this does not enumerate every other account's
+private per-user installations. Uninstall preserves `~/.harbor/config.toml`.
+PATH is not changed by default.
+
+The ZIP needs no installer or elevation. Extract the entire archive, then launch
+`harbor.exe` directly. It includes `harbor.portable` beside the executable; that
+marker selects adjacent `config.toml`, independently of the working directory.
+Startup, automatic watching and **Ctrl+Shift+R** all use that same path for the
+session. Restart Harbor after adding or removing the marker to switch modes.
+Copy the supplied `config.example.toml` to `config.toml` and edit it if desired.
+Without a config file, Harbor uses defaults; startup never creates or overwrites
+it, and portable mode never falls back to home-directory settings. Move the
+entire directory—including the marker, config and complete `conpty/` bundle—to
+carry the configuration. This is configuration portability, not a no-trace
+sandbox: existing release logs still go to `~/.harbor/harbor.log`, and launched
+shells may keep their own histories.
+
+Pull requests to `main` run the shared Windows quality workflow, including a
+static-CRT release build, both package formats and packaging regression checks.
+The tag-triggered release workflow reuses those same gates and accepts only stable
+`vMAJOR.MINOR.PATCH` tags matching the root Cargo version. MSI version fields must
+fit `255.255.65535`; unrepresentable or mismatched versions fail rather than being
+remapped. Only the release workflow uploads both assets to a draft GitHub Release
+and publishes it after the checks succeed; PR checks do not publish releases.
+An already published Release is not replaced. Initial packages are **unsigned**
+and may trigger unknown-publisher or SmartScreen prompts. Native ARM64/x86
+application packages and prerelease version mappings are not included; their
+OpenConsole hosts still remain bundled.
+
+Package-construction checks do not establish all installation or live publication
+acceptance. See [Current Status](docs/current-status.md#windows-distribution) for
+the verified scope and [Validation](docs/validation.md#windows-release-packages)
+for the remaining Windows lifecycle and downloaded-artifact checks.
+
 ## Library Crates
 
 The reusable subsystems have crate-level usage guides:
@@ -49,7 +116,7 @@ Both crates are currently documented as pre-1.0 workspace libraries. Their READM
 
 ### Startup Configuration
 
-Copy [`config.example.toml`](config.example.toml) to `~/.harbor/config.toml`. Harbor reads it at startup and watches for changes by default, including editor replacement saves. **Ctrl+Shift+R** (`app.reload-configuration`) remains available independently of watching. Harbor does not create a missing file. The reload binding follows the same replacement/unbinding rules as other application commands.
+For installed or unmarked builds, copy [`config.example.toml`](config.example.toml) to `~/.harbor/config.toml`. For a [portable ZIP](#windows-release-packages), use `config.toml` beside the marked executable instead. Harbor selects one configuration path at startup and uses it for automatic watching, manual reload and diagnostics throughout the session. **Ctrl+Shift+R** (`app.reload-configuration`) remains available independently of watching. Harbor does not create a missing file. The reload binding follows the same replacement/unbinding rules as other application commands.
 
 Manual and automatic reload validate the complete document: unreadable files, malformed TOML, invalid recognized settings, or invalid/conflicting bindings reject the entire candidate and retain the last accepted configuration. Startup fallback below remains separate. Unknown ordinary settings produce ignored-setting warnings.
 
@@ -79,7 +146,7 @@ The built-in default terminal palette is Catppuccin Mocha, with Harbor's existin
 
 - Invalid scalar font/shell fields fall back independently; an invalid supplied color resets the complete palette.
 - Invalid keybinding overrides reset the complete binding table while retaining valid non-keybinding settings. Omitted commands keep defaults; `bindings = []` unbinds a command.
-- Missing/unreadable files and invalid TOML use complete defaults. Unknown keys are warned about and ignored.
+- At startup, missing files use complete defaults silently; unreadable files and invalid TOML use complete defaults with diagnostics. Portable mode never substitutes home-directory settings. Unknown keys are warned about and ignored.
 - Missing font family uses DirectWrite system monospace selection. On Windows, a missing shell program tries `pwsh.exe`, then `powershell.exe`, then `COMSPEC`/`cmd.exe`, falling back when process creation fails. A configured executable takes precedence; if it cannot start, the same default sequence is retried without its configured arguments. Tab titles use the executable that actually started. This Windows policy does not apply to other platforms; Unix PTY support is not yet implemented.
 - Terminal background alpha is preserved. It does not configure the Windows Acrylic backdrop tint.
 

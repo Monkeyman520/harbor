@@ -50,13 +50,42 @@ Implementation and validation are separate axes. An implemented feature may stil
 | New product workflows      | Pane splitting, scrollback search, named profiles, command palette and command-navigation UI are not implemented | Planned as N04–N09, rather than described as existing features                                                                                                                                                                |
 | Native Unix runtime        | **Deferred:** the Unix PTY backend is a stub                                                                                               | [Unix PTY](../crates/harbor-pty/src/unix.rs); running a shell through WSL/SSH on Windows is a different scope                                                                                                                 |
 
+## Windows Distribution
+
+| Area | Current implementation | Evidence / boundary |
+| ---- | ---------------------- | ------------------- |
+| MSI | Implemented x64 static-CRT payload, per-user/per-machine scope, scoped shortcuts and same-scope upgrade identity | [Package builder](../scripts/package_windows.ps1), [MSI builder](../scripts/build_windows_msi.ps1), [WiX source](../packaging/windows/Harbor.wxs). Real MSI construction and headless database/costing checks passed locally; ordinary-user installation, authorized UAC, upgrade and uninstall acceptance remain NOT RUN for this revision. |
+| Portable ZIP | Implemented executable-adjacent marker/configuration, independent of launch directory; startup, watching, manual reload and diagnostics reuse one startup-selected path | [Configuration resolver](../crates/harbor-config/src/lib.rs), [application integration](../src/shell.rs), [subprocess regression](../src/configuration_notice_tests.rs). Missing startup configuration silently uses defaults; malformed TOML or unreadable startup files diagnose and use defaults. Rejected reloads retain accepted settings; portable mode never substitutes home settings. Restart to change marker mode. |
+| Release automation | Implemented shared PR/release quality and package gates, bounded stable-version validation and separate release publication | [Quality workflow](../.github/workflows/windows-quality-gates.yml), [release workflow](../.github/workflows/windows-release.yml), [package tests](../scripts/tests/test_package_windows.ps1). Workflow lint and local package tests passed; live tag publication and downloaded-asset acceptance remain NOT RUN. Packages are unsigned. |
+
+Local verification covers `2870b8a` plus the portable-path, packaging/MSI,
+regression-test and workflow fixes in the working tree. Environment: Windows
+build `10.0.26300.0`, bundled ConPTY `1.24.260710001`, PowerShell `7.6.6` and
+Windows PowerShell `5.1.26100.9444`, with .NET SDK `8.0.426` for MSI construction.
+Format, all-target/all-feature clippy, configuration/application regressions,
+static-CRT MSI/ZIP construction and package checks passed. Package checks ran in
+both PowerShell versions and include embedded payload, normalized archive paths,
+secure `APPLICATIONFOLDER` propagation metadata and late machine-scope costing;
+these are not proof of actual elevated installation.
+
+With `HARBOR_TEST_GPU=dx12-warp`, the initial workspace run failed the unchanged
+GPU pixel-comparison regression
+`render::text::sequence_tests::t0002_native_changed_metrics_replacement_and_failed_preparation_are_coherent`.
+Its isolated rerun and a subsequent full `cargo test --locked --workspace` passed
+without suppressing or changing the assertion. The intermittent failure remains
+unresolved; a successful rerun is not proof it is fixed. Earlier installer/runtime
+records are historical, not acceptance of this working tree. See
+[Windows Release Packages](validation.md#windows-release-packages) for remaining
+lifecycle and live-release checks.
+
 ## Verification and Release Readiness
 
 The repository contains focused unit/contract tests and parser property/fuzz infrastructure. That is not equivalent to a recorded Windows daily-use release. See [Validation](validation.md) for exact commands and the evidence-record format.
 
 ### Automation Already Configured
 
-- [Windows quality gates](../.github/workflows/windows-quality-gates.yml) run format, all-target/all-feature clippy, workspace tests and documentation checks on pull requests to `main`.
+- [Windows quality gates](../.github/workflows/windows-quality-gates.yml) run format, all-target/all-feature clippy, locked workspace tests and documentation checks on pull requests to `main`, then build a static-CRT x64 release, construct MSI/ZIP packages and run packaging regressions before uploading checked artifacts.
+- [Windows release](../.github/workflows/windows-release.yml) reuses those quality/package gates for stable tags. A separate job with release-write permission uploads both assets to a draft Release and publishes it only after success; PR checks do not publish releases or replace a published Release.
 - [Parser fuzz workflow](../.github/workflows/parser-fuzz.yml) configures Ubuntu corpus replay and scheduled/manual bounded campaigns.
 
 These workflow files exist. Their remote run results were not verified in this documentation refresh; do not list CI as missing or claim it is passing solely from configuration.

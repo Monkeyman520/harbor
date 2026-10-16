@@ -124,20 +124,9 @@ Existing integration-test anchors include `sgr_mouse_routes_cell_coordinates_but
 
 ## Decisions and Traceability
 
-| Assertion / choice | Authority |
-| --- | --- |
-| Legacy, horizontal SGR wheel, SGR pixel outcome; exact bytes; required quality/runtime gates | Issue #192 |
-| Standard legacy tracking semantics rather than press-only; no `?9`; support both optional encodings | Approved recommendation; ADR 0055; xterm tracking/encoding definitions |
-| Independent tracking and encoding flags, deterministic priorities and disable fallback | Approved recommendation; retained ADR 0038 tracking policy; ADR 0055 |
-| Reject legacy coordinates above 223 | Approved recommendation; xterm legacy coordinate range |
-| UTF-8 numeric offsets/range, urxvt decimal offset, release distinctions | Protocol meanings of approved encoding support; checked xterm 401 source |
-| Physical content-relative pixel origin, DPI/padding/allocation ownership and preserved cell behavior | Approved recommendation; inspected PointerInteraction and RenderViewport geometry |
-| Dual-axis deterministic reports, unchanged vertical multiplicity and no accumulation | Approved recommendation; existing encoder behavior |
-| Coherent modes/coordinate units after queued output; VT-over-local precedence; Cancel cleanup | Approved recommendation; inspected Terminal/TerminalIo and existing interaction tests |
-| Supported per-mode status and unknown consume-ignore behavior | Issue #192; existing DECRQM/DECRPM contract and Screen mode state |
-| Truthful checklist and separate Windows application evidence | Issue #192; Validation Policy |
+[#192](https://github.com/wangjq4214/harbor/issues/192), user approval and [ADR 0055](../adr/0055-multi-encoding-mouse-reporting.md) establish the independent priorities, legacy fallback (not press-only), optional encodings, legacy 223-coordinate rejection and horizontal/pixel scope. Protocol/direction references are retained with R2/R4; existing tracking priority derives from ADR 0038. Existing Terminal/TerminalIo, pointer/viewport and query contracts supply coherent queued modes, VT precedence and Cancel cleanup.
 
-No new session/buffer lifetime, native-host ownership or transport-support assumption is introduced. The fixed dual-axis order, private helper organization and well-formed new-range boundary handling are deliberately left as documented, tested implementation details rather than invented product policies. A material new behavior, API, architecture or acceptance choice outside this latitude must return to clarification before changing the contract.
+No new buffer lifetime, native-host ownership or transport support is assumed. Fixed dual-axis order, helper layout and documented/tested well-formed new-range boundary handling remain implementation details. Material behavior/API/architecture/acceptance changes outside that latitude require clarification.
 
 ## Verification and Definition of Done
 

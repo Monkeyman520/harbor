@@ -1,0 +1,55 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Check and package x64 release
+    uses: ./.github/workflows/windows-quality-gates.yml
+    with:
+      release-tag: ${{ github.ref_name }}
+
+  publish:
+    name: Publish checked release assets
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download checked packages
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-x64-release
+          path: release-assets
+
+      - name: Create draft, upload both assets, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          msi="release-assets/harbor-${version}-windows-x64.msi"
+          zip="release-assets/harbor-${version}-windows-x64-portable.zip"
+          test -f "$msi"
+          test -f "$zip"
+          # Never replace the contents of an existing published release.
+          if gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' > draft-state; then
+            test "$(cat draft-state)" = true
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "Harbor $RELEASE_TAG" --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" "$msi" "$zip" --clobber
+          gh release edit "$RELEASE_TAG" --draft=false

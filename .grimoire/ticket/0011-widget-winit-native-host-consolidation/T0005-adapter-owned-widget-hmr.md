@@ -17,13 +17,7 @@ Optional Windows debug Widget HMR is a reusable `harbor-widget::winit` host capa
 
 ## Approach
 
-1. Move `hot-lib-reloader` ownership and generic observer/lifecycle state behind an optional widget winit/HMR feature, retaining the existing Windows debug-only activation boundary.
-2. Accept an application-supplied reloadable/static root factory and stable Host-owned input handles without importing Harbor actions or UI types.
-3. Encapsulate background observation and UI-thread wake work so the application event channel transports adapter work but does not implement generation ordering.
-4. Before releasing the reload barrier, cancel or isolate stale input ownership, remove the old root, run the required Runtime teardown/update work, and destroy old Views, Fibers, registrations, and callbacks while their library generation remains loaded.
-5. Activate only a valid replacement generation, install one new root, update through the ordinary host scheduler, and request redraw.
-6. Preserve Store state, application models, windows, shared GPU resources, terminals, PTYs, and event-turn action semantics; reset Widget/Fiber-local state.
-7. Keep static builds on the same host/root contract without an observer.
+Follow [Spec 0012's reload lifecycle](../../spec/0012-widget-winit-native-host-consolidation.md#solution): observe → UI-thread teardown while the old library is loaded → release barrier → activate valid generation → install one root → ordinary update/redraw. Use the same root contract for static builds, preserve Host resources and state, and reset Widget/Fiber-local state. Coordination and remaining proofs follow below.
 
 ## Dependencies and Coordination
 
@@ -51,7 +45,6 @@ Optional Windows debug Widget HMR is a reusable `harbor-widget::winit` host capa
 - [x] Shared contract/signature/layout changes remain documented as requiring application restart.
 - [x] Default/non-HMR and unsupported-target builds contain no active observer and preserve static behavior.
 - [ ] Repeated real Windows reloads pass the existing TypeId, duplicate dependency, tracing, callback lifetime, and library-generation feasibility gate.
-
 
 ## Verification Evidence
 

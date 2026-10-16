@@ -149,12 +149,37 @@ pub fn default_config_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".harbor").join("config.toml"))
 }
 
-/// Loads startup settings from Harbor's default per-user path.
+const PORTABLE_MARKER: &str = "harbor.portable";
+const PORTABLE_CONFIG: &str = "config.toml";
+
+fn config_path(
+    executable: Option<&Path>,
+    home_path: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(directory) = executable.and_then(Path::parent)
+        && directory.join(PORTABLE_MARKER).is_file()
+    {
+        return Some(directory.join(PORTABLE_CONFIG));
+    }
+    home_path()
+}
+
+/// Loads startup settings from the portable directory when marked, otherwise
+/// from Harbor's default per-user path.
 pub fn load() -> SettingsLoad {
-    match default_config_path() {
+    load_with_path().1
+}
+
+/// Resolves the configuration source once and returns it with startup settings.
+/// Consumers must retain this path for watching, reloads and diagnostics.
+pub fn load_with_path() -> (Option<PathBuf>, SettingsLoad) {
+    let executable = std::env::current_exe().ok();
+    let path = config_path(executable.as_deref(), default_config_path);
+    let loaded = match path.as_ref() {
         Some(path) => load_from_path(path),
         None => SettingsLoad::defaults("could not resolve the user home directory"),
-    }
+    };
+    (path, loaded)
 }
 
 /// Loads startup settings from an injectable path.
@@ -807,6 +832,80 @@ mod tests {
 
     fn parse(source: &str) -> SettingsLoad {
         parse_document(toml::from_str(source).expect("test TOML must parse"))
+    }
+
+    fn test_directory() -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "harbor-config-portable-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn portable_marker_takes_precedence_and_missing_or_malformed_config_never_falls_back() {
+        let directory = test_directory();
+        let executable = directory.join("harbor.exe");
+        let home = directory.join("home-config.toml");
+        fs::write(directory.join(PORTABLE_MARKER), "").unwrap();
+        fs::write(&home, "[font]\nsize = 42").unwrap();
+
+        let portable = directory.join(PORTABLE_CONFIG);
+        fs::write(&portable, "[font]\nsize = 19").unwrap();
+        let selected = config_path(Some(&executable), || Some(home.clone())).unwrap();
+        assert_eq!(selected, portable);
+        assert_eq!(load_from_path(&selected).settings.font.size, 19.0);
+
+        fs::remove_file(&portable).unwrap();
+        let missing = config_path(Some(&executable), || panic!("home fallback consulted")).unwrap();
+        let loaded = load_from_path(&missing);
+        assert_eq!(loaded.settings, Settings::default());
+        assert!(loaded.diagnostics.is_empty());
+        assert_eq!(fs::read_to_string(&home).unwrap(), "[font]\nsize = 42");
+
+        fs::write(&portable, "[font\nsize = 19").unwrap();
+        let malformed = load_from_path(
+            config_path(Some(&executable), || panic!("home fallback consulted")).unwrap(),
+        );
+        assert_eq!(malformed.settings, Settings::default());
+        assert!(
+            malformed.diagnostics[0]
+                .message
+                .contains("could not parse settings")
+        );
+        assert_eq!(fs::read_to_string(&home).unwrap(), "[font]\nsize = 42");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn portable_config_path_moves_with_executable_directory() {
+        let original = test_directory();
+        fs::write(original.join(PORTABLE_MARKER), "").unwrap();
+        fs::write(original.join(PORTABLE_CONFIG), "[font]\nsize = 21").unwrap();
+        let moved = original.with_file_name(format!(
+            "{}-moved",
+            original.file_name().unwrap().to_string_lossy()
+        ));
+        fs::rename(&original, &moved).unwrap();
+
+        let path = config_path(Some(&moved.join("harbor.exe")), || {
+            panic!("home fallback consulted")
+        })
+        .unwrap();
+        assert_eq!(load_from_path(path).settings.font.size, 21.0);
+        fs::remove_dir_all(moved).unwrap();
+    }
+
+    #[test]
+    fn absent_portable_marker_preserves_home_path_selection() {
+        let directory = test_directory();
+        let home = directory.join("home-config.toml");
+        let selected = config_path(Some(&directory.join("harbor.exe")), || Some(home.clone()));
+        assert_eq!(selected, Some(home));
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

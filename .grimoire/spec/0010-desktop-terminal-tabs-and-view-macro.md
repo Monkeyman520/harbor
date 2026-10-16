@@ -204,78 +204,57 @@ A layout observer or equivalent post-layout effect reports the active terminal c
 
 ### E2E: Create and independently use multiple tabs
 
-- **Given:** The main window has one active terminal.
-- **When:** The user creates a second tab and enters different commands in each tab.
-- **Then:** Each command reaches only its active tab's PTY, and switching preserves independent screen, scrollback, cursor, and process state.
+Creating a second tab and entering different commands in each sends input only to the active PTY; switching preserves independent screen, scrollback, cursor and process state.
 
 ### E2E: Close tabs deterministically
 
-- **Given:** Three tabs A, B, and C exist with B active.
-- **When:** B is closed.
-- **Then:** B's resources and registrations are released, C becomes active, A and C preserve keyed state, and stale B events are ignored.
+Closing active B among A/B/C releases B's resources/registrations, activates C, preserves A/C keyed state and safely ignores stale B events.
 
 ### E2E: Close the final tab
 
-- **Given:** One terminal tab remains.
-- **When:** The user closes it through the button or `Ctrl+W`.
-- **Then:** Its PTY shuts down and Harbor closes the main window rather than creating another tab.
+Closing the final tab by button or `Ctrl+W` shuts down its PTY and closes Harbor without creating a replacement.
 
 ### E2E: Resize all sessions from the content allocation
 
-- **Given:** Multiple active and inactive tabs exist.
-- **When:** The window is resized, minimized/restored, or moved across 100%, 150%, and 200% DPI displays.
-- **Then:** The rail follows its expanded/compact policy, the terminal region receives the remaining valid allocation, and every live PTY receives each changed row/column size once.
+Across resize, minimize/restore and 100/150/200% DPI movement, the rail follows expanded/compact policy, Terminal receives the valid remaining allocation, and each live PTY receives each changed row/column size once.
 
 ### E2E: Background output does not cause hidden rendering
 
-- **Given:** An inactive tab produces sustained output while the active tab is idle.
-- **When:** Host events are processed.
-- **Then:** The inactive Terminal ingests output, optional unread state changes, no hidden terminal draw occurs, and the event loop does not remain in Poll solely because of the inactive cursor.
+Sustained inactive output is ingested and may update unread state, but causes no hidden terminal draws or cursor-driven continuous Poll.
 
 ### E2E: Keyboard and paste modal behavior
 
-- **Given:** Focus is in the active terminal or tab rail.
-- **When:** Tab shortcuts and focus traversal are used, including while paste confirmation is open.
-- **Then:** Commands activate the expected tab and restore focus, while the existing confirmation gate blocks tab-changing and terminal-input commands until confirmation completes.
+From terminal or rail focus, shortcuts/traversal activate the expected tab and restore focus; paste confirmation blocks terminal-input and tab-changing commands until resolved.
 
 ### E2E: Macro and handwritten composition are equivalent
 
-- **Given:** Equivalent static and dynamic tab-rail trees are authored once with fluent builders and once with `view!`.
-- **When:** They are built, reconciled, laid out, painted, and sent input.
-- **Then:** Their keys, Fiber order, geometry, event targets, and scene output are equivalent.
+Equivalent fluent and `view!` static/dynamic rail trees produce identical keys, Fiber order, geometry, event targets and scene output after build/reconciliation/layout/paint/input.
 
 ## Decisions
 
 ### Deliver one product slice rather than a complete widget catalog
 
-- **Choice:** Implement only the generic widget capabilities directly required by side-rail terminal tabs.
-- **Reason:** This proves each abstraction through a concrete Harbor use case and avoids recreating Flutter's mobile-oriented catalog.
+Implement only the generic widget capabilities directly required by side-rail terminal tabs. This proves each abstraction through a concrete Harbor use case and avoids recreating Flutter's mobile-oriented catalog.
 
 ### Keep tab/session ownership in the Runtime Host
 
-- **Choice:** `TabManager` owns TerminalTab and PTY lifecycles in the application layer; `harbor-widget` receives generic composition and callbacks only.
-- **Reason:** The Runtime Host already owns shell startup, windows, GPU resources, paste policy, and fatal lifecycle handling.
-- **ADR reference:** [0011-terminal-custompaint-gpu-injection](../adr/0011-terminal-custompaint-gpu-injection.md), [0015-runtime-owned-frame-presentation](../adr/0015-runtime-owned-frame-presentation.md)
+See [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md), [ADR 0015](../adr/0015-runtime-owned-frame-presentation.md).
 
 ### Use a vertical responsive rail, not mobile navigation
 
-- **Choice:** Use a persistent 200dp/56dp side rail selected by available logical width.
-- **Reason:** Mouse, keyboard, resize, and wide-window use are the product target; a drawer or bottom bar would introduce unrelated mobile interaction policy.
+Use a persistent 200dp/56dp side rail selected by available logical width. Mouse, keyboard, resize, and wide-window use are the product target; a drawer or bottom bar would introduce unrelated mobile interaction policy.
 
 ### Use a thin internal Rust-style procedural macro
 
-- **Choice:** `view! { cx; root }` uses `expression;` for one child value, `expression => { children }` for child-bearing components, and bare control flow only within child lists.
-- **Reason:** It improves tree readability while retaining ordinary Rust expressions, explicit ownership/type errors, and one Component/View runtime model.
+`view! { cx; root }` uses `expression;` for one child value, `expression => { children }` for child-bearing components, and bare control flow only within child lists. It improves tree readability while retaining ordinary Rust expressions, explicit ownership/type errors, and one Component/View runtime model.
 
 ### Keep macro keying explicit
 
-- **Choice:** Dynamic items call the ordinary `.keyed(TabId)` extension; the macro never invents positional or data-derived keys.
-- **Reason:** Identity is application policy, and hidden key generation would obscure reconciliation behavior.
+Dynamic items call the ordinary `.keyed(TabId)` extension; the macro never invents positional or data-derived keys. Identity is application policy, and hidden key generation would obscure reconciliation behavior.
 
 ### Close the main window with the final tab
 
-- **Choice:** Closing the final terminal tab terminates its session and closes Harbor.
-- **Reason:** This is the selected terminal-style lifecycle and avoids hidden automatic shell creation.
+Closing the final terminal tab terminates its session and closes Harbor. This is the selected terminal-style lifecycle and avoids hidden automatic shell creation.
 
 ## Test Plan
 

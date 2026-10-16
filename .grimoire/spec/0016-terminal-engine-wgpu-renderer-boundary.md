@@ -42,10 +42,7 @@ Keep a compatibility facade while `harbor-app` and terminal widget integration m
 
 ## Decisions and open contract detail
 
-- **Approved direction:** Feature isolation first, optional crate split only when needed to prove the required core-only dependency boundary; concrete wgpu renderer and a migration-only compatibility facade that may be removed once all callers have moved. Source: [ADR-0045](../adr/0045-gpu-independent-terminal-core-boundary.md) and #176.
-- **Preserved boundaries:** Host-injected GPU access and host-owned scheduling; acknowledged PTY resize ordering remains a constraint. Sources: ADR-0011, ADR-0021 and ADR-0043.
-- **Confirmed update and ownership policy:** One current renderer per session; snapshot reads do not consume visual changes, and hidden/failed draws must be recoverable. The logical engine owns state and timing; the session adapter owns PTY connection, resize coordination and close. Source: user-confirmed recommendations in [ADR-0045](../adr/0045-gpu-independent-terminal-core-boundary.md).
-- **Implementation freedom:** Concrete update representation, safe acknowledgement mechanics and affected upload layers may be selected during implementation as long as the preceding behavior, existing visual output and dependency boundary are preserved. Any proposed observable or architectural change returns to discussion before revising the spec.
+[ADR 0045](../adr/0045-gpu-independent-terminal-core-boundary.md) and #176 authorize the solution above: feature isolation first, one concrete renderer per session, engine-owned state/timing and session-owned PTY lifecycle. Host GPU injection/scheduling and acknowledged resize remain constrained by ADRs 0011, 0021 and 0043. Update representation, safe acknowledgement and upload-layer selection are implementation details; observable or architectural changes require discussion before revising this spec.
 
 ## Test and evidence plan
 

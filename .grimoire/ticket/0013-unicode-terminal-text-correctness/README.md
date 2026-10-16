@@ -9,10 +9,7 @@ Deliver #153 in bounded increments: preserve and display combining marks through
 
 ## Delivery surfaces
 
-- **Terminal model and write/edit paths:** `model.rs`, `screen.rs`, `screen/edit/cell_writer.rs`, `screen/edit/cell_ops.rs`, `normal_buf.rs`, and incremental `harbor-parser` callbacks.
-- **Content and coordinates:** `logical_content.rs`, `content_anchor.rs`, `primary_reflow.rs`, `selection_model.rs`, copy paths, wide-cell invariants and buffer-specific resize.
-- **Presentation:** `render/text.rs`, `render/layout.rs`, `damage.rs`, `harbor-text` atlas/DirectWrite fallback, font/DPI update handling.
-- **Acceptance:** focused tests, Windows shell/clipboard/app sessions, revision and version records, standard quality gates, and self-contained validation summaries; raw artifacts stay local or in retrievable CI.
+The shared writer/text-unit, logical content/anchors, renderer/damage and Windows evidence boundaries are defined by [Spec 0015](../../spec/0015-unicode-terminal-text-correctness.md); do not introduce parallel width paths.
 
 ## Dependencies and retained acceptance
 

@@ -4,7 +4,6 @@
 **Status:** Implemented
 **Date:** 2026-08-26
 
-
 **Superseded in part:** the earlier 16dp inset and 12dp/25%/4dp/12dp preset in the acceptance text below are superseded by the current Terminal Window Inset (4dp) and Terminal Decoration Preset (8dp radius, 10%-opaque shadow, 1dp offset and blur) recorded in CONTEXT.md. The earlier values are retained as historical design intent.
 ## Requirement
 
@@ -12,7 +11,7 @@ Harbor must provide Flutter-style, reusable widget box decoration and use it to 
 
 ## Solution
 
-`harbor-widget` exposes a general-purpose `DecoratedBox` wrapper with immutable value types and fluent builders modeled after Flutter: `BoxDecoration`, `BorderRadius`, `Border`, `BoxShadow`, and `ClipBehavior`. `BoxDecoration` supports an optional color, one uniform border, uniform or per-corner radii, and an ordered list of outer shadows. Values use logical pixels and do not alter measurement or layout bounds.
+`harbor-widget` exposes a general-purpose `DecoratedBox` wrapper with immutable value types implementing `Default` plus fluent builders modeled after Flutter: `BoxDecoration`, `BorderRadius`, `Border`, `BoxShadow`, and `ClipBehavior`. `BoxDecoration` supports an optional color, one uniform border, uniform or per-corner radii, and an ordered list of outer shadows. Values use logical pixels and do not alter measurement or layout bounds.
 
 Decoration paints in the stable order shadow → background → child → border. Shadow lists paint in list order from back to front, with the first item at the bottom. A decoration with no color emits no background fill. Radius, border width, and blur radius are finite and non-negative; spread radius may be negative; non-finite values are invalid.
 
@@ -31,77 +30,53 @@ The main Runtime Host composes `TerminalWidgetBridge` inside `DecoratedBox` with
 
 ### E2E: Main terminal displays the product decoration
 
-- **Given:** Harbor opens the main terminal window at a drawable non-zero size.
-- **When:** The first terminal frame is presented.
-- **Then:** The terminal has a 12dp anti-aliased rounded outline and a 25%-opaque black shadow offset 4dp downward with 12dp blur, while its measured allocation and 16dp window inset remain unchanged.
+At first drawable main-window presentation, the historical preset produces a 12dp anti-aliased outline and 25%-opaque black shadow, offset 4dp downward with 12dp blur, without changing allocation or 16dp inset. See the current-preset supersession note.
 
 ### E2E: Rounded clipping applies to Terminal CustomPaint
 
-- **Given:** Terminal content or a scrollbar reaches a corner of the terminal allocation.
-- **When:** The terminal is rendered through `TerminalWidgetBridge` and `CustomPaint`.
-- **Then:** Pixels outside the 12dp rounded child shape are not presented, the shadow remains visible outside that shape, and ancestor clipping can still truncate overflow.
+Terminal content/scrollbar reaching a corner is clipped to the historical 12dp rounded shape through bridge/CustomPaint; the outer shadow remains visible but ancestor clips still truncate overflow.
 
 ### E2E: Rounded clipping governs pointer targeting
 
-- **Given:** `ClipBehavior::AntiAlias` is active on the decorated terminal.
-- **When:** A pointer event occurs inside the terminal's rectangular allocation but outside its rounded shape.
-- **Then:** The terminal is not selected as the hit target; pointer behavior inside the rounded shape is unchanged.
+With `AntiAlias`, a pointer inside the terminal rectangle but outside its rounded shape does not target Terminal; input inside the shape is unchanged.
 
 ### E2E: Acrylic remains visible
 
-- **Given:** The Windows main window uses Acrylic and the terminal contains Default Background Cells.
-- **When:** The decorated terminal frame is presented.
-- **Then:** Empty terminal pixels remain unfilled and reveal Acrylic, while explicit cell backgrounds, inverse cells, the border if configured, and the outer shadow remain readable.
+Over Windows Acrylic, default terminal cells stay unfilled; explicit backgrounds, inverse cells, configured borders and shadows remain readable.
 
 ### E2E: Decoration remains reusable and optional
 
-- **Given:** A non-terminal child is wrapped in `DecoratedBox`, and another child is not decorated.
-- **When:** Both are laid out, painted, and hit-tested.
-- **Then:** The decorated child follows its configured color, border, radius, shadows, and clip behavior without changing size; the undecorated child preserves existing appearance and behavior.
+A decorated non-terminal child follows its configured color, border, radii, shadows and clipping without changing size; an undecorated sibling keeps its existing behavior.
 
 ### E2E: Degenerate and invalid decoration values are bounded
 
-- **Given:** A decoration uses zero radius, zero blur, negative spread that collapses the shadow bounds, or invalid non-finite input.
-- **When:** The scene is prepared and rendered.
-- **Then:** Zero or collapsed effects produce no spurious pixels, invalid input is rejected by the public value contract, and rendering does not panic or submit invalid GPU geometry.
+Zero radius/blur and negative spread collapsing shadow bounds produce no spurious pixels. The public contract rejects non-finite values without panics or invalid GPU geometry.
 
 ## Decisions
 
 ### Use a generic DecoratedBox rather than Terminal-specific properties
 
-- **Choice:** Decoration belongs to `harbor-widget`; the application wraps `TerminalWidgetBridge` instead of extending Terminal or `CustomPaint` with terminal-only style fields.
-- **Reason:** The Widget Runtime owns its independent visual pipeline, while Terminal remains an opaque engine injected through the explicit CustomPaint escape hatch.
-- **ADR reference:** [0003-widget-independent-pipeline](../adr/0003-widget-independent-pipeline.md), [0011-terminal-custompaint-gpu-injection](../adr/0011-terminal-custompaint-gpu-injection.md)
+See [ADR 0003](../adr/0003-widget-independent-pipeline.md), [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md).
 
 ### Preserve the CustomPaint external-draw boundary
 
-- **Choice:** Rounded clipping and decoration compose around `Primitive::External`; Terminal continues to receive frame-scoped render access and does not acquire Widget, Window, Surface, Device, or Queue ownership.
-- **Reason:** This retains provider-by-ID paint ordering and the Runtime-owned frame policy rather than introducing a second Terminal rendering path.
-- **ADR reference:** [0005-custom-paint-provider-by-id](../adr/0005-custom-paint-provider-by-id.md), [0011-terminal-custompaint-gpu-injection](../adr/0011-terminal-custompaint-gpu-injection.md), [0015-runtime-owned-frame-presentation](../adr/0015-runtime-owned-frame-presentation.md)
+See [ADR 0005](../adr/0005-custom-paint-provider-by-id.md), [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md), [ADR 0015](../adr/0015-runtime-owned-frame-presentation.md).
 
 ### Separate decoration, clipping, and layout semantics
 
-- **Choice:** Decoration never changes measured size; `ClipBehavior` independently controls rounded child paint and hit testing; shadows paint outside the child clip but remain subject to ancestors.
-- **Reason:** This keeps the retained Widget Runtime's layout, paint, and hit-test responsibilities explicit and avoids moving allocation policy into the renderer or terminal.
-- **ADR reference:** [0002-signal-pull-model](../adr/0002-signal-pull-model.md), [0003-widget-independent-pipeline](../adr/0003-widget-independent-pipeline.md)
+See [ADR 0002](../adr/0002-signal-pull-model.md), [ADR 0003](../adr/0003-widget-independent-pipeline.md).
 
 ### Use Flutter-style value types with a bounded first-version surface
 
-- **Choice:** Provide `Default` plus fluent builders; support optional color, uniform border, per-corner radius, ordered outer shadows, and `None`/`HardEdge`/`AntiAlias` clipping; omit inner shadows, per-edge borders, and save-layer clipping.
-- **Reason:** The API is extensible without requiring speculative rendering features, and the Widget Runtime's independent pipeline can evolve without coupling to terminal rendering.
-- **ADR reference:** [0003-widget-independent-pipeline](../adr/0003-widget-independent-pipeline.md)
+See [ADR 0003](../adr/0003-widget-independent-pipeline.md).
 
 ### Preserve transparent terminal composition
 
-- **Choice:** `BoxDecoration` defaults to no fill, and the terminal preset does not set a color; decoration paints shadow → background → child → border.
-- **Reason:** An implicit opaque quad would violate the Acrylic contract, while the selected order keeps the external terminal below an optional border and above the background.
-- **ADR reference:** [0005-custom-paint-provider-by-id](../adr/0005-custom-paint-provider-by-id.md), [0023-windows-acrylic-backdrop-not-mica](../adr/0023-windows-acrylic-backdrop-not-mica.md)
+See [ADR 0005](../adr/0005-custom-paint-provider-by-id.md), [ADR 0023](../adr/0023-windows-acrylic-backdrop-not-mica.md).
 
 ### Apply a concrete product preset at the Runtime Host root
 
-- **Choice:** Wrap the main `TerminalWidgetBridge` with 12dp radius, 25%-opaque black shadow, `(0dp, 4dp)` offset, 12dp blur, zero spread, no fill, and anti-aliased clipping.
-- **Reason:** The Host already composes the terminal root while Terminal remains styling-independent; applying the preset there gives the feature an observable product result without changing standalone Terminal rendering.
-- **ADR reference:** [0011-terminal-custompaint-gpu-injection](../adr/0011-terminal-custompaint-gpu-injection.md), [0015-runtime-owned-frame-presentation](../adr/0015-runtime-owned-frame-presentation.md), [0023-windows-acrylic-backdrop-not-mica](../adr/0023-windows-acrylic-backdrop-not-mica.md)
+See [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md), [ADR 0015](../adr/0015-runtime-owned-frame-presentation.md), [ADR 0023](../adr/0023-windows-acrylic-backdrop-not-mica.md).
 
 ## Test Plan
 

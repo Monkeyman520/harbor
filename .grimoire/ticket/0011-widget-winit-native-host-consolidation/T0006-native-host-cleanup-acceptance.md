@@ -16,12 +16,7 @@ Harbor has one native Widget host implementation with no duplicate binary-owned 
 
 ## Approach
 
-1. Remove compatibility constructors, duplicate surface configuration, direct Runtime/frame orchestration, application-owned generic HMR lifecycle, and obsolete frame-resource injection after all consumers migrate.
-2. Make `WinitFrameTarget` internal or remove it from the application contract; keep only APIs required by adapter implementation and external drawing.
-3. Remove root-level generic GPU/HMR dependencies and feature wiring that no longer have an application-owned use, while preserving application platform dependencies required by backdrop/chrome hooks.
-4. Confirm the binary ApplicationHandler reads as business coordination: window routing, models/reducers, terminal/PTY and paste policy, platform configuration, and fatal/exit decisions.
-5. Run focused, workspace, feature-matrix, and manual Windows verification from Spec 0012; record any environment-only evidence required for HMR and native composition.
-6. Treat failures as implementation blockers or focused follow-up work rather than retaining two competing host paths.
+Remove obsolete constructors, duplicate surface/frame/Runtime/HMR orchestration and unused root GPU/HMR wiring after migration. Make `WinitFrameTarget` internal or remove it from the application contract, keeping external-draw APIs and required platform dependencies. Verify the Spec 0012 matrix; failures block acceptance or become focused follow-ups, not a reason to keep competing host paths.
 
 ## Dependencies and Coordination
 

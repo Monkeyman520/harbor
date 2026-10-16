@@ -5,6 +5,13 @@ on:
     branches:
       - main
 
+  workflow_call:
+    inputs:
+      release-tag:
+        type: string
+        required: false
+        default: ''
+
 permissions:
   contents: read
 
@@ -12,6 +19,9 @@ jobs:
   quality:
     name: quality
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -21,11 +31,17 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
 
       - name: Cache Rust dependencies and build artifacts
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+
+      - name: Validate package version and optional release tag
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        run: ./scripts/package_windows.ps1 -ValidateVersionOnly -ReleaseTag $env:RELEASE_TAG
 
       - name: Restore pinned ConPTY runtime
         run: ./scripts/fetch_conpty.ps1
@@ -34,15 +50,40 @@ jobs:
         run: cargo fmt --check
 
       - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Run workspace tests
         env:
           HARBOR_TEST_GPU: dx12-warp
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
 
       - name: Check documentation
         run: python scripts/check_docs.py
 
       - name: Summarize protocol checklist
         run: python scripts/checklist_summary.py
+
+      - name: Install .NET for pinned WiX
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build and validate both release formats
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        run: ./scripts/package_windows.ps1 -ReleaseTag $env:RELEASE_TAG -OutputDirectory ./target/dist
+
+      - name: Exercise packaging rejection boundaries
+        run: |
+          $version = (Get-Item ./target/x86_64-pc-windows-msvc/release/harbor.exe).VersionInfo.ProductVersion
+          ./scripts/tests/test_package_windows.ps1 -ReleaseDirectory ./target/x86_64-pc-windows-msvc/release -MsiPath "./target/dist/harbor-$version-windows-x64.msi"
+
+      - name: Preserve checked package outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-release
+          path: |
+            target/dist/harbor-*-windows-x64.msi
+            target/dist/harbor-*-windows-x64-portable.zip
+          if-no-files-found: error
+          retention-days: 7

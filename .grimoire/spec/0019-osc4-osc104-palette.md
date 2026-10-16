@@ -91,14 +91,7 @@ Extend the existing terminal-owned indexed color resolution and OSC action path.
 
 ### Inspected repository anchors
 
-- `crates/harbor-config/src/color.rs`: current `Palette`, semantic `Color`, and computed indexed-color resolution. The current type stores ANSI normal/bright entries, not mutable slots for 16-255.
-- `crates/harbor-terminal/src/screen/default_colors.rs` and `screen.rs`: startup/active default colors, changed-color damage, alternate-screen state transfer, and the 1024-byte reply buffer.
-- `crates/harbor-terminal/src/parser/osc.rs`, `osc_color.rs`, and `handlers.rs`: typed OSC routing, supported RGB parsing/rounding, default-color reply formatting, and action application.
-- `crates/harbor-terminal/src/lib.rs` and `update.rs`: active palette projection and rejection of stale update acknowledgements.
-- `crates/harbor-terminal/src/render/pipeline.rs`: palette synchronization into retained render layers.
-- `crates/harbor-terminal/src/parser/tests.rs`, `parser/incremental_tests.rs`, `screen/tests.rs`, `core_tests.rs`, `terminal_tests.rs`, and render tests: existing regression and integration surfaces.
-
-These anchors describe the inspected integration points, not delivered OSC 4/104 implementation. Choosing private storage and helper organization remains execution detail within this contract.
+Use existing session palette/configuration, typed OSC color routing, Screen reply/damage and coherent update/renderer synchronization paths. Private storage/helper layout remains an implementation detail; the contract requires semantic ANSI/indexed aliases and bounded complete replies, not the historical inspected storage layout.
 
 ## End-to-End Tests
 
@@ -125,18 +118,7 @@ All byte strings below use Rust escape notation; tests must compare protocol byt
 
 ## Decisions and Traceability
 
-| Assertion / choice | Authority |
-| --- | --- |
-| Full indexed set/query/reset outcome, bounded actions, invalid input, exact replies and required gates | Issue #191 |
-| 0-255 subset, RGB formats, alpha, whole-request validation, ordered mixed operations, explicit reset lifetime | User approval of the recommendation table; ADR 0053 |
-| Existing default-color contract is unchanged | Issue #191; ADR 0036; inspected `osc_color.rs` |
-| Startup ANSI colors and existing cube/grayscale baseline; consistent ANSI aliases | Approved implementation boundaries; inspected `harbor-config/src/color.rs` |
-| RGB scaling, lowercase repeated-byte queries, 28-byte longest palette reply | Existing `parse_component`/`format_query` semantics applied to approved OSC 4 syntax; inspected source and byte-length derivation |
-| Complete-reply capacity/drop and existing OSC retention bound | ADR 0017; TerminalReply and Parser Retention Limits context; inspected `Screen::push_reply` |
-| Coherent update, pending damage and GPU-independent ownership | Approved rendering boundaries; ADR 0045; inspected `read_update`, `acknowledge_update`, and renderer synchronization |
-| Named Windows workload, truthful checklist/evidence claims | Issue #191; Validation Policy |
-
-No additional domain fact, architecture, precision policy, special-slot support, or unconfirmed assumption is introduced. A material new protocol, lifetime, ownership, or acceptance choice discovered during execution must return to clarification and durable recording before this contract is changed.
+[#191](https://github.com/wangjq4214/harbor/issues/191) and [ADR 0053](../adr/0053-bounded-session-osc-palette-policy.md) settle range, RGB subset, alpha, whole-request validation, ordered operations and reset lifetime. Preserve default colors under [ADR 0036](../adr/0036-preserve-harbor-alpha-for-osc-default-colors.md), complete replies under ADR 0017, and coherent GPU-independent ownership under [ADR 0045](../adr/0045-gpu-independent-terminal-core-boundary.md). Existing RGB scaling/quantization applied to OSC 4 yields the specified 28-byte longest reply. Evidence follows [Validation](../../docs/validation.md); new protocol, lifetime, precision or ownership choices require clarification and recording.
 
 ## Verification and Definition of Done
 

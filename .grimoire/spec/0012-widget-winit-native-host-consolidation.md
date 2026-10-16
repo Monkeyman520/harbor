@@ -51,83 +51,57 @@ The binary ApplicationHandler continues to identify the target window and forwar
 
 ### E2E: Main window starts through the consolidated host
 
-- **Given:** Harbor starts with its normal static UI configuration.
-- **When:** ApplicationHandler resumes for the first time.
-- **Then:** The widget winit integration creates and configures the main Window, shared GPU resources, Surface, Runtime, and initial root; the application supplies Harbor-specific configuration but performs no duplicate generic winit/wgpu/Runtime bootstrap.
+On first static startup resume, the widget adapter creates main Window, shared GPU, Surface, Runtime and root from Harbor configuration, without duplicate application bootstrap.
 
 ### E2E: Confirmation window uses the same host boundary
 
-- **Given:** The main window is active and a paste requires confirmation.
-- **When:** The application creates the independent confirmation window.
-- **Then:** The confirmation window is built through the same adapter/builder, reuses compatible shared GPU resources, owns an independent Runtime and Surface lifecycle, and preserves application-owned cross-window input gating.
+A confirmable paste creates an independent confirmation host through the same builder, sharing compatible GPU resources but retaining its own Runtime/Surface lifecycle and App cross-window gate.
 
 ### E2E: Application UI reload retains native and business resources
 
-- **Given:** Harbor is running in Windows debug HMR mode with active tabs, terminal sessions, PTYs, and Host-owned Store state.
-- **When:** A valid application UI generation is rebuilt.
-- **Then:** The adapter tears down the old root before replacement, installs and redraws the new root, resets Widget/Fiber-local state, and retains window identity, GPU resources, terminal sessions, PTYs, and application state.
+A valid Windows debug UI rebuild tears down/replaces/redraws one root, resets Widget/Fiber-local state and retains window/GPU identity, terminal sessions, PTYs and Host Store state.
 
 ### E2E: Old-generation callbacks cannot execute
 
-- **Given:** The active root contains action callbacks and terminal external-draw registrations from the current dynamic generation.
-- **When:** Reload begins while input or rendering work may be pending.
-- **Then:** The adapter cancels or isolates stale input ownership, destroys the old root and registrations before releasing the reload barrier, and exposes only callbacks from the active replacement generation after reload.
+If input/render work is pending during reload, the adapter cancels/isolates stale ownership and destroys old roots/registrations before barrier release; only active-generation callbacks remain reachable.
 
 ### E2E: Terminal rendering consumes adapter-owned GPU resources
 
-- **Given:** A terminal CustomPaint node is present in either a static or reloaded root.
-- **When:** The adapter renders a frame.
-- **Then:** Terminal-owned pipelines draw using adapter-provided GPU/frame access without owning or creating the Window, Surface, Instance, Adapter, Device, or Queue, and no terminal dependency is introduced into `harbor-widget`.
+Static or reloaded terminal CustomPaint draws terminal-owned pipelines using adapter GPU/frame access, without Terminal owning/creating Window, Surface, Instance, Adapter, Device or Queue, or introducing terminal dependencies into widgets.
 
 ### E2E: Resize and surface recovery remain encapsulated
 
-- **Given:** Either native window is running through the adapter.
-- **When:** It resizes, changes DPI, becomes zero-sized, restores, or receives a recoverable surface error.
-- **Then:** The adapter updates viewport and configuration state, suspends zero-sized acquisition, follows the existing recovery/presentation policy, and reports only unrecoverable failures for application fatal-policy handling.
+For either window, resize/DPI/zero-size/restore/recoverable errors update viewport/configuration and suspend acquisition while zero-sized; only unrecoverable failures reach App fatal policy.
 
 ### E2E: Ordinary builds remain static
 
-- **Given:** Harbor is built without the HMR feature or on an unsupported HMR target.
-- **When:** The application starts and source or dynamic-library outputs change.
-- **Then:** The same native host path runs with a static root factory, no reload observer or lifecycle is active, and normal multi-window behavior remains unchanged.
+Without HMR or on an unsupported target, changing source/DLL outputs leaves the same static-root native host path running without an active observer/lifecycle.
 
 ### E2E: Business behavior remains application-owned
 
-- **Given:** Widgets dispatch tab, terminal, or paste intent through existing application contracts.
-- **When:** The adapter completes event routing.
-- **Then:** The application drains and reduces actions once at its established boundary, coordinates PTY and cross-window effects, and remains the sole owner of business policy.
+After widget event routing/effects, App drains/reduces tab, terminal and paste actions once at its established boundary; PTY, cross-window effects and business policy stay application-owned.
 
 ## Decisions
 
 ### Consolidate native infrastructure without moving the complete event loop
 
-- **Choice:** `harbor-widget::winit` owns reusable per-window native infrastructure, while the binary retains EventLoop/ApplicationHandler and application-wide coordination.
-- **Reason:** This removes generic host mechanics from the application without coupling Harbor-specific multi-window and process policy to the widget crate.
-- **ADR reference:** [0031-widget-winit-adapter-owns-native-host-infrastructure](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md)
+See [ADR 0031](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md).
 
 ### Share GPU infrastructure while keeping surfaces per window
 
-- **Choice:** The widget integration owns shareable Instance/Adapter/Device/Queue resources and independent per-window Surface/Runtime state.
-- **Reason:** Both windows use one reusable initialization boundary while preserving the established Runtime-per-window model.
-- **ADR reference:** [0031-widget-winit-adapter-owns-native-host-infrastructure](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md)
+See [ADR 0031](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md).
 
 ### Keep terminal GPU state terminal-owned
 
-- **Choice:** Move only generic wgpu bootstrap and surface ownership; retain terminal pipelines/resources behind CustomPaint GPU injection.
-- **Reason:** This keeps `harbor-widget` independent of `harbor-terminal` and preserves terminal rendering ownership.
-- **ADR reference:** [0011-terminal-custompaint-gpu-injection](../adr/0011-terminal-custompaint-gpu-injection.md), [0031-widget-winit-adapter-owns-native-host-infrastructure](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md)
+See [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md), [ADR 0031](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md).
 
 ### Encapsulate generic HMR lifecycle in the widget adapter
 
-- **Choice:** The optional widget winit/HMR integration owns observer and generation lifecycle; applications provide root factories and stable state/action handles.
-- **Reason:** HMR root replacement is native Widget host infrastructure, while application contracts and durable state remain business concerns.
-- **ADR reference:** [0031-widget-winit-adapter-owns-native-host-infrastructure](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md), [0029-widget-store-state-action-boundary](../adr/0029-widget-store-state-action-boundary.md)
+See [ADR 0031](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md), [ADR 0029](../adr/0029-widget-store-state-action-boundary.md).
 
 ### Preserve the independent confirmation window and application input gate
 
-- **Choice:** Main and confirmation windows use the same adapter type but remain separate native windows with independent Runtime state; the application continues to gate cross-window input.
-- **Reason:** Infrastructure reuse does not change the accepted paste safety or independent-window behavior.
-- **ADR reference:** [0007-retain-separate-paste-confirmation-window](../adr/0007-retain-separate-paste-confirmation-window.md), [0009-app-cross-window-input-gate](../adr/0009-app-cross-window-input-gate.md)
+See [ADR 0007](../adr/0007-retain-separate-paste-confirmation-window.md), [ADR 0009](../adr/0009-app-cross-window-input-gate.md).
 
 ## Test Plan
 

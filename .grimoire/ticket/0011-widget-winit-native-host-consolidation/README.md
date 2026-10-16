@@ -2,7 +2,6 @@
 
 **Source:** [Spec: 0012-widget-winit-native-host-consolidation.md](../../spec/0012-widget-winit-native-host-consolidation.md)
 **Decision:** [ADR: 0031-widget-winit-adapter-owns-native-host-infrastructure.md](../../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md)
-**Ticket folder:** `.grimoire/ticket/0011-widget-winit-native-host-consolidation/`
 
 ## Overview
 
@@ -15,11 +14,6 @@ Spec 0012 Solution (adapter-owned host; historical T0001–T0004)
   ├──> T0005 Adapter-owned Widget HMR Lifecycle
   └──> T0006 Legacy Host Cleanup and Acceptance <── T0005
 ```
-
-## Recommended Order
-
-1. T0005 — Adapter-Owned Widget HMR Lifecycle
-2. T0006 — Legacy Host Cleanup and Acceptance
 
 ## Requirement Coverage
 

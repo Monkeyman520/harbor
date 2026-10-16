@@ -35,77 +35,53 @@ The Windows implementation has no runtime fallback to `fs::read`, `fontdb`, or `
 
 ### E2E: Default Windows startup
 
-- **Given:** Windows with no `HARBOR_FONT` value
-- **When:** Harbor creates its first terminal window and renders Latin text
-- **Then:** DirectWrite selects the primary face, terminal metrics are positive and stable, the text appears through the existing WGPU atlas, and no legacy font loader is invoked
+On Windows without `HARBOR_FONT`, first-window Latin rendering uses a DirectWrite-selected primary face with positive, stable metrics and the existing WGPU atlas, never the legacy loader.
 
 ### E2E: Configured primary with system fallback
 
-- **Given:** `HARBOR_FONT` points to a valid process-private font that lacks a tested CJK character
-- **When:** Harbor renders Latin and CJK text
-- **Then:** Latin uses the configured primary face, CJK uses DirectWrite system fallback, and both use cell geometry derived only from the configured primary face
+With a valid process-private `HARBOR_FONT` lacking CJK coverage, Latin uses that primary and CJK uses DirectWrite fallback; both retain primary-face cell geometry.
 
 ### E2E: Cached fallback resolution
 
-- **Given:** A terminal session has already rendered a character missing from its primary face
-- **When:** The same character is rendered repeatedly and after terminal redraws
-- **Then:** The resolved face and glyph are reused without rescanning, reopening, or reparsing fonts, and atlas output remains stable
+Repeated rendering/redraw of a previously resolved missing-primary character reuses its face/glyph without font rescans, reopenings or reparsing, with stable atlas output.
 
 ### E2E: Invalid configured font
 
-- **Given:** `HARBOR_FONT` points to a missing, unreadable, or unsupported font
-- **When:** Harbor initializes text rendering
-- **Then:** Startup returns a clear font-configuration error and does not silently use the system default or a legacy loader
+A missing, unreadable or unsupported `HARBOR_FONT` produces a clear startup configuration error rather than silently choosing a system default or legacy loader.
 
 ### E2E: Windows memory profile
 
-- **Given:** The documented Latin-only DHAT scenario and matching Windows private-memory measurement
-- **When:** Harbor reaches first presentation and the defined steady-state dwell point
-- **Then:** No complete font file is allocated in the Rust heap, the global live-heap peak is below 40 MiB on the reference machine, and peak and steady private memory are lower than the recorded pre-change baseline
+In the documented Latin DHAT/Windows private-memory scenario, first-present and steady-dwell measurements show no full-font Rust allocation, global live-heap peak below 40 MiB, and lower peak/steady private memory than the pre-change baseline.
 
 ### E2E: Unsupported platform
 
-- **Given:** A non-Windows compilation target
-- **When:** The workspace attempts to compile `harbor-text`
-- **Then:** Compilation fails with an explicit unsupported-platform diagnostic rather than selecting the old portable backend
+Compiling `harbor-text` for a non-Windows target fails with an explicit unsupported-platform diagnostic, not a portable-backend fallback.
 
 ## Decisions
 
 ### DirectWrite owns the full Windows font path
 
-- **Choice:** Use DirectWrite for selection, fallback, metrics, glyph resolution, and rasterization instead of using it only to discover files for `fontdue`.
-- **Reason:** The measured dominant allocation path is eager `fontdue` parsing of large CJK collections; retaining parser-owned font bytes would not satisfy the memory requirement. Locating the backend in `harbor-text` preserves the terminal dependency boundary.
-- **ADR reference:** [0012-consolidate-render-ui-into-terminal](../adr/0012-consolidate-render-ui-into-terminal.md)
+DirectWrite replaces eager parsing of large CJK collections; file discovery alone would retain the dominant allocation. See [ADR 0012](../adr/0012-consolidate-render-ui-into-terminal.md).
 
 ### Keep CPU text and GPU rendering separated
 
-- **Choice:** Change glyph identity and CPU rasterization as needed while retaining the existing WGPU atlas and terminal rendering pipeline.
-- **Reason:** This preserves the shared CPU text-core boundary and terminal-owned GPU rendering established by existing architecture decisions.
-- **ADR reference:** [0004-widget-dependency-boundary](../adr/0004-widget-dependency-boundary.md), [0008-widget-runtime-for-confirmation-window](../adr/0008-widget-runtime-for-confirmation-window.md), [0011-terminal-custompaint-gpu-injection](../adr/0011-terminal-custompaint-gpu-injection.md), [0012-consolidate-render-ui-into-terminal](../adr/0012-consolidate-render-ui-into-terminal.md)
+See [ADR 0004](../adr/0004-widget-dependency-boundary.md), [ADR 0008](../adr/0008-widget-runtime-for-confirmation-window.md), [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md), [ADR 0012](../adr/0012-consolidate-render-ui-into-terminal.md).
 
 ### Delegate default selection and missing-glyph fallback to Windows
 
-- **Choice:** Preserve only the `HARBOR_FONT` override; otherwise use DirectWrite system selection and DirectWrite system fallback.
-- **Reason:** This removes hard-coded primary/CJK candidate lists, handles scripts through the platform font system, and preserves `harbor-text` as the font-policy owner.
-- **ADR reference:** [0012-consolidate-render-ui-into-terminal](../adr/0012-consolidate-render-ui-into-terminal.md)
+See [ADR 0012](../adr/0012-consolidate-render-ui-into-terminal.md).
 
 ### Preserve terminal geometry from the primary face
 
-- **Choice:** Fallback glyphs never alter terminal cell metrics.
-- **Reason:** Stable grid dimensions are required by `harbor-terminal`; fallback affects glyph selection only.
-- **ADR reference:** [0012-consolidate-render-ui-into-terminal](../adr/0012-consolidate-render-ui-into-terminal.md)
+See [ADR 0012](../adr/0012-consolidate-render-ui-into-terminal.md).
 
 ### Deliver a Windows-only backend without a legacy fallback
 
-- **Choice:** Reject non-Windows compilation and fail explicitly when no usable DirectWrite face exists.
-- **Reason:** The product runtime is currently Windows-only, and retaining the old loader would violate the memory invariant. No existing ADR governs platform support, so ADRs 0001–0013 were cross-checked with no conflict.
-- **ADR reference:** No directly applicable ADR.
+Reject non-Windows compilation and fail explicitly if no usable DirectWrite face exists; no portable-loader fallback.
 
 ### Permit coordinated workspace API changes
 
-- **Choice:** `harbor-text` public font and atlas APIs may change while all workspace callers migrate together.
-- **Reason:** Native face identity, fallback caching, and rasterization ownership cannot be represented reliably by the current immutable `FontBook` plus `char`-only atlas contract.
-- **ADR reference:** [0004-widget-dependency-boundary](../adr/0004-widget-dependency-boundary.md), [0012-consolidate-render-ui-into-terminal](../adr/0012-consolidate-render-ui-into-terminal.md)
+Migrate all workspace callers together; immutable `FontBook` plus `char`-only atlas identity cannot represent native fallback ownership reliably. See [ADR 0004](../adr/0004-widget-dependency-boundary.md), [ADR 0012](../adr/0012-consolidate-render-ui-into-terminal.md).
 
 ### ADR cross-check
 
